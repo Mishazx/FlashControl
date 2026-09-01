@@ -1,13 +1,18 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .db import engine, get_db, initialize_database
+from .identity import register_computer, resolve_identity
 from .models import Observation
+from .read_api import router as read_router
 from .schemas import IngestResult, ObservationIn
 
 
@@ -18,6 +23,14 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="FlashControl Main Server", version="0.1.0", lifespan=lifespan)
+app.include_router(read_router)
+web_directory = Path(__file__).parent / "web"
+app.mount("/static", StaticFiles(directory=web_directory), name="static")
+
+
+@app.get("/", include_in_schema=False)
+def web_ui() -> FileResponse:
+    return FileResponse(web_directory / "index.html")
 
 
 def idempotent_insert(values: dict):
@@ -100,6 +113,11 @@ def ingest_observations(
         inserted = db.execute(statement).scalar_one_or_none()
         if inserted is not None:
             accepted_ids.append(inserted)
+            observation = db.scalar(
+                select(Observation).where(Observation.event_id == inserted)
+            )
+            register_computer(db, observation)
+            resolve_identity(db, observation)
     db.commit()
 
     accepted = len(accepted_ids)

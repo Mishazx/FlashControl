@@ -10,6 +10,7 @@ services:
     volumes:
       - flashcontrol_pgdata:/var/lib/postgresql/data
       - ./migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql:ro
+      - ./migrations/002_identity_engine.sql:/docker-entrypoint-initdb.d/002_identity_engine.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U flashcontrol -d flashcontrol"]
       interval: 5s

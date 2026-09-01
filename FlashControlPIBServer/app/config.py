@@ -7,6 +7,7 @@ DATABASE_URL = os.environ.get(
     "sqlite:///./flashcontrol-dev.db",
 )
 LOG_LEVEL = os.environ.get("FLASHCONTROL_LOG_LEVEL", "INFO").upper()
+UNAUTHENTICATED_READ_API = ENVIRONMENT in ("development", "test")
 
 if ENVIRONMENT == "production" and DATABASE_URL.startswith("sqlite"):
     raise RuntimeError("SQLite is not allowed in production")
