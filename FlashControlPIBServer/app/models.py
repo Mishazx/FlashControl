@@ -151,6 +151,33 @@ class AuthSession(Base):
     user_agent: Mapped[str | None] = mapped_column(String(512))
 
 
+class OidcIdentity(Base):
+    __tablename__ = "oidc_identities"
+    __table_args__ = (UniqueConstraint("issuer", "subject", name="uq_oidc_identity_subject"),)
+
+    id: Mapped[object] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[object] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("auth_users.id"), nullable=False, unique=True
+    )
+    issuer: Mapped[str] = mapped_column(String(1024), nullable=False)
+    subject: Mapped[str] = mapped_column(String(512), nullable=False)
+    groups: Mapped[list] = mapped_column(json_type, nullable=False)
+    created_at_utc: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at_utc: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class OidcTransaction(Base):
+    __tablename__ = "oidc_transactions"
+
+    id: Mapped[object] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    browser_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    nonce: Mapped[str] = mapped_column(String(128), nullable=False)
+    code_verifier: Mapped[str] = mapped_column(String(128), nullable=False)
+    created_at_utc: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at_utc: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
 

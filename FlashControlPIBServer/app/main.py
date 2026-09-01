@@ -64,10 +64,10 @@ def web_ui(
     return FileResponse(web_directory / "index.html")
 
 
-@app.get("/login", include_in_schema=False)
-def login_page() -> FileResponse:
+@app.get("/login", include_in_schema=False, response_model=None)
+def login_page() -> FileResponse | RedirectResponse:
     if AUTH_PROVIDER != "local":
-        raise HTTPException(status_code=503, detail="OIDC login is not implemented")
+        return RedirectResponse("/api/v1/auth/oidc/start", status_code=303)
     return FileResponse(web_directory / "login.html")
 
 

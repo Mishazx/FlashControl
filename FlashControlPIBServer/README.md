@@ -109,7 +109,26 @@ Available roles:
 - `security`: read audit data and administrative audit log;
 - `auditor`: read-only USB audit data without the administrative audit log.
 
-Production rejects SQLite, rejects the local authentication provider, and will
-not start without `FLASHCONTROL_OIDC_ISSUER` and
-`FLASHCONTROL_OIDC_CLIENT_ID`. The OIDC validation and callback flow are not yet
-implemented, so production remains deliberately fail-closed at the login layer.
+Production rejects SQLite and local authentication. Configure the provider's
+discovery issuer, client ID, fixed callback URI, and at least one group-to-role
+mapping. The login uses Authorization Code Flow with PKCE, browser-bound
+one-time server-side state, nonce validation, discovery/JWKS signature verification, strict issuer
+and audience checks, and short-lived login transactions. Access and refresh
+tokens are never persisted.
+
+```text
+FLASHCONTROL_OIDC_ISSUER=https://idp.example/tenant
+FLASHCONTROL_OIDC_CLIENT_ID=flashcontrol
+FLASHCONTROL_OIDC_REDIRECT_URI=https://flashcontrol.example/api/v1/auth/oidc/callback
+FLASHCONTROL_OIDC_ADMIN_GROUPS=flashcontrol-admins
+FLASHCONTROL_OIDC_SECURITY_GROUPS=flashcontrol-security
+FLASHCONTROL_OIDC_AUDITOR_GROUPS=flashcontrol-auditors
+```
+
+`FLASHCONTROL_OIDC_CLIENT_SECRET` is optional for public clients using PKCE and
+required when the identity provider registers FlashControl as a confidential
+client. Group values may be names or immutable directory object IDs. If the
+provider uses another claim, set `FLASHCONTROL_OIDC_GROUP_CLAIM`. When multiple
+groups match, the strongest role wins: admin, then security, then auditor.
+Accounts without a mapping are denied; `FLASHCONTROL_OIDC_DEFAULT_ROLE` exists
+only for deployments that intentionally want a fallback role.

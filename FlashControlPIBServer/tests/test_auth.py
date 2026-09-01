@@ -29,6 +29,9 @@ class ProductionConfigurationTests(unittest.TestCase):
             "FLASHCONTROL_ENVIRONMENT", "FLASHCONTROL_DATABASE_URL",
             "FLASHCONTROL_AUTH_PROVIDER", "FLASHCONTROL_OIDC_ISSUER",
             "FLASHCONTROL_OIDC_CLIENT_ID",
+            "FLASHCONTROL_OIDC_REDIRECT_URI", "FLASHCONTROL_OIDC_ADMIN_GROUPS",
+            "FLASHCONTROL_OIDC_SECURITY_GROUPS", "FLASHCONTROL_OIDC_AUDITOR_GROUPS",
+            "FLASHCONTROL_OIDC_DEFAULT_ROLE",
         ):
             environment.pop(name, None)
         environment.update(values)
@@ -65,6 +68,8 @@ class ProductionConfigurationTests(unittest.TestCase):
             FLASHCONTROL_AUTH_PROVIDER="oidc",
             FLASHCONTROL_OIDC_ISSUER="https://idp.example/tenant",
             FLASHCONTROL_OIDC_CLIENT_ID="flashcontrol",
+            FLASHCONTROL_OIDC_REDIRECT_URI="https://flash.example/api/v1/auth/oidc/callback",
+            FLASHCONTROL_OIDC_ADMIN_GROUPS="flash-admins",
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
