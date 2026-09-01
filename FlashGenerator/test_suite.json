@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "vmid": 5000,
+  "profiles": [
+    "baseline_mbr_fat32",
+    "gpt_single_ntfs",
+    "dual_partition_mbr",
+    "gpt_dual_partition",
+    "exfat_single",
+    "mbr_boot_flag",
+    "empty_raw",
+    "gpt_unformatted",
+    "large_4g",
+    "collision_media_a",
+    "collision_media_b",
+    "hardware_variant_a",
+    "hardware_variant_b",
+    "rename_test_base",
+    "format_test_base"
+  ],
+  "manual_profiles": [
+    "rename_test_base",
+    "format_test_base"
+  ],
+  "comparisons": [
+    {
+      "name": "collision_media_pair",
+      "profiles": ["collision_media_a", "collision_media_b"],
+      "same_hashes": ["hardware_stable_sha256", "pnp_observation_sha256"],
+      "different_hashes": ["media_identity_sha256", "media_state_sha256", "observation_sha256"]
+    },
+    {
+      "name": "hardware_serial_pair",
+      "profiles": ["hardware_variant_a", "hardware_variant_b"],
+      "same_hashes": ["media_identity_sha256", "media_state_sha256"],
+      "different_hashes": ["hardware_stable_sha256", "pnp_observation_sha256", "observation_sha256"]
+    }
+  ],
+  "repeatability_profiles": [
+    "baseline_mbr_fat32"
+  ],
+  "hash_fields": [
+    "hardware_stable_sha256",
+    "pnp_observation_sha256",
+    "media_identity_sha256",
+    "media_state_sha256",
+    "observation_sha256"
+  ]
+}

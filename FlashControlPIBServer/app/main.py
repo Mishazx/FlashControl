@@ -1,17 +1,36 @@
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from pydantic import ValidationError
 from sqlalchemy import text
-from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from .db import get_db
+from .db import engine, get_db, initialize_database
 from .models import Observation
 from .schemas import IngestResult, ObservationIn
 
 
-app = FastAPI(title="FlashControl Main Server", version="0.1.0")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    initialize_database()
+    yield
+
+
+app = FastAPI(title="FlashControl Main Server", version="0.1.0", lifespan=lifespan)
+
+
+def idempotent_insert(values: dict):
+    if engine.dialect.name == "sqlite":
+        from sqlalchemy.dialects.sqlite import insert
+    else:
+        from sqlalchemy.dialects.postgresql import insert
+    return (
+        insert(Observation)
+        .values(**values)
+        .on_conflict_do_nothing(index_elements=[Observation.event_id])
+        .returning(Observation.event_id)
+    )
 
 
 def unpack_payload(payload: Any) -> list[ObservationIn]:
@@ -77,12 +96,7 @@ def ingest_observations(
     source_ip = request.client.host if request.client else None
     accepted_ids = []
     for item in observations:
-        statement = (
-            insert(Observation)
-            .values(**observation_values(item, source_ip))
-            .on_conflict_do_nothing(index_elements=[Observation.event_id])
-            .returning(Observation.event_id)
-        )
+        statement = idempotent_insert(observation_values(item, source_ip))
         inserted = db.execute(statement).scalar_one_or_none()
         if inserted is not None:
             accepted_ids.append(inserted)

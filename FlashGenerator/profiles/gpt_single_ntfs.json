@@ -1,0 +1,23 @@
+{
+  "name": "gpt_single_ntfs",
+  "description": "GPT, один NTFS том, проверка GPT disk GUID и partition GUID",
+  "size_mb": 128,
+  "partition_style": "gpt",
+  "gpt_disk_guid": "11111111-1111-1111-1111-111111111111",
+  "partitions": [
+    {
+      "number": 1,
+      "filesystem": "ntfs",
+      "label": "CORP_USB",
+      "gpt_name": "PrimaryData",
+      "partition_type": "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7",
+      "partition_guid": "22222222-2222-2222-2222-222222222222"
+    }
+  ],
+  "expect": {
+    "usb_required": true,
+    "partition_style": "GPT",
+    "min_partitions": 1,
+    "min_volumes": 1
+  }
+}

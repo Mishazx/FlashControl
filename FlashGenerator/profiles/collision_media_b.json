@@ -1,0 +1,29 @@
+{
+  "name": "collision_media_b",
+  "description": "Пара B для collision candidate: тот же use-case, другой GPT/volume serial",
+  "size_mb": 64,
+  "partition_style": "gpt",
+  "gpt_disk_guid": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+  "partitions": [
+    {
+      "number": 1,
+      "filesystem": "fat32",
+      "label": "CLONE_B",
+      "gpt_name": "CloneSetB",
+      "partition_guid": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "volume_serial": "CAFE0002"
+    }
+  ],
+  "expect": {
+    "usb_required": true,
+    "partition_style": "GPT",
+    "min_volumes": 1
+  },
+  "qemu_attach": {
+    "usb_serial": "FG-COLL-SHARED",
+    "drive_serial": "STOR-COLLIDE",
+    "vendor_id": "0781",
+    "product_id": "5583",
+    "removable": true
+  }
+}

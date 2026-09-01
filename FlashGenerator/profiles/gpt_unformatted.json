@@ -1,0 +1,22 @@
+{
+  "name": "gpt_unformatted",
+  "description": "GPT-разметка есть, тома не отформатированы",
+  "size_mb": 128,
+  "partition_style": "gpt",
+  "gpt_disk_guid": "33333333-3333-3333-3333-333333333333",
+  "partitions": [
+    {
+      "number": 1,
+      "filesystem": "none",
+      "gpt_name": "UnformattedData",
+      "partition_guid": "44444444-4444-4444-4444-444444444444"
+    }
+  ],
+  "expect": {
+    "usb_required": true,
+    "partition_style": "GPT",
+    "min_partitions": 1,
+    "max_volumes": 0,
+    "volume_status_in": ["no_volumes", "available"]
+  }
+}

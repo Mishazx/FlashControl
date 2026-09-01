@@ -1,0 +1,22 @@
+{
+  "name": "exfat_single",
+  "description": "GPT + один exFAT том",
+  "size_mb": 128,
+  "partition_style": "gpt",
+  "gpt_disk_guid": "88888888-8888-8888-8888-888888888888",
+  "partitions": [
+    {
+      "number": 1,
+      "filesystem": "exfat",
+      "label": "EXFAT_USB",
+      "gpt_name": "ExfatData",
+      "partition_guid": "99999999-9999-9999-9999-999999999999"
+    }
+  ],
+  "expect": {
+    "usb_required": true,
+    "partition_style": "GPT",
+    "min_volumes": 1,
+    "filesystems_contain": ["exFAT"]
+  }
+}

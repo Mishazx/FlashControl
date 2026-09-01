@@ -1,0 +1,12 @@
+{
+  "name": "empty_raw",
+  "description": "Полностью пустой raw-диск без таблицы разделов",
+  "size_mb": 64,
+  "partition_style": "raw",
+  "partitions": [],
+  "expect": {
+    "usb_required": true,
+    "max_volumes": 0,
+    "volume_status_in": ["no_volumes", "available"]
+  }
+}

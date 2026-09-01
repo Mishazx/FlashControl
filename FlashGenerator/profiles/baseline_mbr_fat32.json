@@ -1,0 +1,26 @@
+{
+  "name": "baseline_mbr_fat32",
+  "description": "MBR, одна FAT32, базовый media identity сценарий",
+  "size_mb": 64,
+  "partition_style": "mbr",
+  "mbr_signature": "A1B2C3D4",
+  "partitions": [
+    {
+      "number": 1,
+      "filesystem": "fat32",
+      "label": "FLASH_A",
+      "volume_serial": "ABCD1234"
+    }
+  ],
+  "expect": {
+    "usb_required": true,
+    "partition_style": "MBR",
+    "min_partitions": 1,
+    "min_volumes": 1
+  },
+  "qemu_attach": {
+    "usb_serial": "FG-BASELINE-001",
+    "drive_serial": "STORBASE01",
+    "removable": true
+  }
+}

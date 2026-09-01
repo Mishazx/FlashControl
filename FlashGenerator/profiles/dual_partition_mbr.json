@@ -1,0 +1,27 @@
+{
+  "name": "dual_partition_mbr",
+  "description": "MBR с двумя томами: FAT32 + exFAT",
+  "size_mb": 256,
+  "partition_style": "mbr",
+  "mbr_signature": "DEADBEEF",
+  "partitions": [
+    {
+      "number": 1,
+      "filesystem": "fat32",
+      "label": "BOOT",
+      "volume_serial": "11112222",
+      "size_mb": 64
+    },
+    {
+      "number": 2,
+      "filesystem": "exfat",
+      "label": "DATA"
+    }
+  ],
+  "expect": {
+    "usb_required": true,
+    "partition_style": "MBR",
+    "min_partitions": 2,
+    "min_volumes": 2
+  }
+}

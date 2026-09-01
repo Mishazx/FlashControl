@@ -1,0 +1,5 @@
+output/
+.state/
+results/
+*.img
+*.raw

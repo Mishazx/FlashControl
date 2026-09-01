@@ -19,6 +19,7 @@ services:
   api:
     build: .
     environment:
+      FLASHCONTROL_ENVIRONMENT: production
       FLASHCONTROL_DATABASE_URL: postgresql+psycopg://flashcontrol:flashcontrol@postgres:5432/flashcontrol
     ports:
       - "8000:8000"
@@ -28,4 +29,3 @@ services:
 
 volumes:
   flashcontrol_pgdata:
-

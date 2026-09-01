@@ -1,0 +1,22 @@
+{
+  "name": "large_4g",
+  "description": "Крупный носитель (~4 GiB) для проверки geometry.size_bytes",
+  "size_mb": 4096,
+  "partition_style": "gpt",
+  "gpt_disk_guid": "12121212-1212-1212-1212-121212121212",
+  "partitions": [
+    {
+      "number": 1,
+      "filesystem": "ntfs",
+      "label": "LARGE_USB",
+      "gpt_name": "LargeData",
+      "partition_guid": "34343434-3434-3434-3434-343434343434"
+    }
+  ],
+  "expect": {
+    "usb_required": true,
+    "partition_style": "GPT",
+    "min_volumes": 1,
+    "min_size_bytes": 4000000000
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "name": "collision_media_a",
+  "description": "Пара A для collision candidate: одинаковый сценарий serial, разный media identity",
+  "size_mb": 64,
+  "partition_style": "gpt",
+  "gpt_disk_guid": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+  "partitions": [
+    {
+      "number": 1,
+      "filesystem": "fat32",
+      "label": "CLONE_A",
+      "gpt_name": "CloneSetA",
+      "partition_guid": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      "volume_serial": "CAFE0001"
+    }
+  ],
+  "expect": {
+    "usb_required": true,
+    "partition_style": "GPT",
+    "min_volumes": 1
+  },
+  "qemu_attach": {
+    "usb_serial": "FG-COLL-SHARED",
+    "drive_serial": "STOR-COLLIDE",
+    "vendor_id": "0781",
+    "product_id": "5583",
+    "removable": true
+  }
+}

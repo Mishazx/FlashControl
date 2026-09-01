@@ -23,10 +23,13 @@ safe and returns it as a duplicate.
 
 ## Local run
 
-Set `FLASHCONTROL_DATABASE_URL`, apply `migrations/001_initial.sql`, then run:
+Development defaults to `sqlite:///./flashcontrol-dev.db`; its schema is created
+automatically. Then run:
 
 ```powershell
 python -m pip install -r requirements.txt
 python -m uvicorn app.main:app --reload
 ```
 
+SQLite is rejected when `FLASHCONTROL_ENVIRONMENT=production`. Production uses
+PostgreSQL and requires applying `migrations/001_initial.sql` explicitly.

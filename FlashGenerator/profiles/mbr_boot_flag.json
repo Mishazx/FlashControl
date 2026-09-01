@@ -1,0 +1,23 @@
+{
+  "name": "mbr_boot_flag",
+  "description": "MBR с bootable primary partition",
+  "size_mb": 128,
+  "partition_style": "mbr",
+  "mbr_signature": "BEEFCAFE",
+  "partitions": [
+    {
+      "number": 1,
+      "filesystem": "fat32",
+      "label": "BOOTVOL",
+      "volume_serial": "B0070001",
+      "bootable": true
+    }
+  ],
+  "expect": {
+    "usb_required": true,
+    "partition_style": "MBR",
+    "min_partitions": 1,
+    "min_volumes": 1,
+    "bootable_partitions_min": 1
+  }
+}

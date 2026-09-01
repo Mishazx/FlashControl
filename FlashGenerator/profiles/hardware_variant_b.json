@@ -1,0 +1,28 @@
+{
+  "name": "hardware_variant_b",
+  "description": "Идентичный media layout, другой QEMU serial (hardware B)",
+  "size_mb": 64,
+  "partition_style": "mbr",
+  "mbr_signature": "A1B2C3D4",
+  "partitions": [
+    {
+      "number": 1,
+      "filesystem": "fat32",
+      "label": "FLASH_A",
+      "volume_serial": "ABCD1234"
+    }
+  ],
+  "expect": {
+    "usb_required": true,
+    "partition_style": "MBR",
+    "min_partitions": 1,
+    "min_volumes": 1
+  },
+  "qemu_attach": {
+    "usb_serial": "FG-HW-VAR-B",
+    "drive_serial": "STOR-HW-B",
+    "vendor_id": "0781",
+    "product_id": "5583",
+    "removable": true
+  }
+}

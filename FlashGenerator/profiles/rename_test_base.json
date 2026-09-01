@@ -1,0 +1,23 @@
+{
+  "name": "rename_test_base",
+  "description": "База для ручного rename: после attach переименуй том в Windows и сравни media_state_hash",
+  "size_mb": 64,
+  "partition_style": "gpt",
+  "gpt_disk_guid": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+  "partitions": [
+    {
+      "number": 1,
+      "filesystem": "fat32",
+      "label": "RENAME_ME",
+      "gpt_name": "BeforeRename",
+      "partition_guid": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+      "volume_serial": "RENAME01"
+    }
+  ],
+  "expect": {
+    "usb_required": true,
+    "partition_style": "GPT",
+    "min_volumes": 1,
+    "manual_followup": "rename_volume_in_windows"
+  }
+}

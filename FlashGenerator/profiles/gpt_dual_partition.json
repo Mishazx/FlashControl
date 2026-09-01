@@ -1,0 +1,31 @@
+{
+  "name": "gpt_dual_partition",
+  "description": "GPT с двумя отформатированными разделами FAT32 + NTFS",
+  "size_mb": 256,
+  "partition_style": "gpt",
+  "gpt_disk_guid": "55555555-5555-5555-5555-555555555555",
+  "partitions": [
+    {
+      "number": 1,
+      "size_mb": 64,
+      "filesystem": "fat32",
+      "label": "GPT_A",
+      "gpt_name": "SystemA",
+      "partition_guid": "66666666-6666-6666-6666-666666666666",
+      "volume_serial": "GPTA0001"
+    },
+    {
+      "number": 2,
+      "filesystem": "ntfs",
+      "label": "GPT_B",
+      "gpt_name": "SystemB",
+      "partition_guid": "77777777-7777-7777-7777-777777777777"
+    }
+  ],
+  "expect": {
+    "usb_required": true,
+    "partition_style": "GPT",
+    "min_partitions": 2,
+    "min_volumes": 2
+  }
+}
