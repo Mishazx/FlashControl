@@ -1,7 +1,8 @@
 # FlashControl Main Server
 
-Minimal raw Observation ingest server. It stores endpoint facts unchanged and
-does not assign `physical_device_id` or merge devices yet.
+FlashControl ingest, identity correlation, audit API, and Web UI server. It
+retains raw endpoint facts and records every physical-device correlation
+decision with its evidence and confidence.
 
 ## Run with Docker
 
@@ -38,6 +39,7 @@ PostgreSQL and requires applying migrations explicitly, in numeric order:
 ```text
 migrations/001_initial.sql
 migrations/002_identity_engine.sql
+migrations/003_auth.sql
 ```
 
 Every accepted Observation is linked to a computer, evaluated by the identity
@@ -64,7 +66,7 @@ evidence becomes available.
 
 ## Read-only audit API
 
-The development and test environments expose paginated read endpoints:
+The server exposes authenticated paginated read endpoints:
 
 - `GET /api/v1/dashboard` for aggregate counters and identity results;
 - `GET /api/v1/computers` and `GET /api/v1/computers/{id}`;
@@ -72,17 +74,42 @@ The development and test environments expose paginated read endpoints:
 - `GET /api/v1/observations` and `GET /api/v1/observations/{event_id}`;
 - `GET /api/v1/identity-decisions`;
 - `GET /api/v1/identity-alerts` for collisions and clone suspects.
+- `GET /api/v1/audit-log` for `admin` and `security` roles.
 
 List endpoints accept `limit` (1–200) and `offset`, return `total`, and provide
 resource-specific filters in OpenAPI. Observation lists return summaries; the
 detail endpoint returns the immutable raw Observation.
 
-Unauthenticated reads are always disabled in production. Until AD/OIDC and RBAC
-are implemented, production read requests return HTTP 403; ingest and health
-endpoints are unaffected.
+All read endpoints and the Web UI require an authenticated session. The ingest
+and health endpoints are separate and remain available to agents and health
+checks.
 
 The Web UI is a dependency-free responsive SPA served by FastAPI itself. It
 includes Dashboard, USB devices, computers, observations, identity alerts, and
 detail drawers with media states and raw evidence. It uses no external CDN and
-therefore works inside an isolated network. In production the shell can load,
-but its data requests remain blocked until authentication is implemented.
+therefore works inside an isolated network.
+
+## Authentication and roles
+
+Development uses local users with salted `scrypt` password hashes. There is no
+default password. Create the first account interactively:
+
+```powershell
+python -m app.manage_user create --username admin --role admin
+```
+
+Then open `http://127.0.0.1:8000/`. Sessions use a random HttpOnly cookie,
+SameSite strict policy, server-side token hashes, an absolute expiry, and CSRF
+protection for state-changing browser requests. Login attempts are rate-limited
+and login/logout activity is written to `audit_log`.
+
+Available roles:
+
+- `admin`: read audit data and administrative audit log;
+- `security`: read audit data and administrative audit log;
+- `auditor`: read-only USB audit data without the administrative audit log.
+
+Production rejects SQLite, rejects the local authentication provider, and will
+not start without `FLASHCONTROL_OIDC_ISSUER` and
+`FLASHCONTROL_OIDC_CLIENT_ID`. The OIDC validation and callback flow are not yet
+implemented, so production remains deliberately fail-closed at the login layer.

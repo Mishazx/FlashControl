@@ -11,6 +11,7 @@ services:
       - flashcontrol_pgdata:/var/lib/postgresql/data
       - ./migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql:ro
       - ./migrations/002_identity_engine.sql:/docker-entrypoint-initdb.d/002_identity_engine.sql:ro
+      - ./migrations/003_auth.sql:/docker-entrypoint-initdb.d/003_auth.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U flashcontrol -d flashcontrol"]
       interval: 5s
@@ -22,6 +23,9 @@ services:
     environment:
       FLASHCONTROL_ENVIRONMENT: production
       FLASHCONTROL_DATABASE_URL: postgresql+psycopg://flashcontrol:flashcontrol@postgres:5432/flashcontrol
+      FLASHCONTROL_AUTH_PROVIDER: oidc
+      FLASHCONTROL_OIDC_ISSUER: ${FLASHCONTROL_OIDC_ISSUER:-}
+      FLASHCONTROL_OIDC_CLIENT_ID: ${FLASHCONTROL_OIDC_CLIENT_ID:-}
     ports:
       - "8000:8000"
     depends_on:

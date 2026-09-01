@@ -7,8 +7,10 @@ const titles = {
   computers: ["ИНФРАСТРУКТУРА", "Компьютеры"],
   events: ["ЖУРНАЛ АУДИТА", "События"],
   alerts: ["IDENTITY ENGINE", "Коллизии и клоны"],
+  audit: ["БЕЗОПАСНОСТЬ", "Журнал действий"],
 };
 const state = { page: "dashboard", offset: 0, limit: 25, filters: {} };
+let currentUser = null;
 const content = document.getElementById("content");
 const drawer = document.getElementById("drawer");
 const backdrop = document.getElementById("drawer-backdrop");
@@ -42,6 +44,10 @@ async function api(path, params = {}) {
     if (value !== "" && value !== null && value !== undefined) url.searchParams.set(key, value);
   });
   const response = await fetch(url, { headers: { Accept: "application/json" } });
+  if (response.status === 401) {
+    window.location.assign("/login");
+    throw new Error("Требуется вход");
+  }
   if (!response.ok) {
     let detail = `HTTP ${response.status}`;
     try { detail = (await response.json()).detail || detail; } catch (_) {}
@@ -129,6 +135,14 @@ async function renderAlerts() {
   bindRows(); bindPagination();
 }
 
+async function renderAudit() {
+  const data = await api("/audit-log", { limit: state.limit, offset: state.offset, action: state.filters.action, success: state.filters.success });
+  const rows = data.items.map(item => `<tr><td>${formatDate(item.created_at_utc)}</td><td><span class="primary">${esc(item.username)}</span><span class="secondary mono">${esc(item.source_ip)}</span></td><td>${esc(item.action)}</td><td><span class="badge ${item.success ? "same" : "alert"}">${item.success ? "SUCCESS" : "FAILED"}</span></td><td class="mono">${esc(JSON.stringify(item.details))}</td></tr>`).join("");
+  content.innerHTML = `<div class="toolbar"><select class="field" id="audit-success"><option value="">Все результаты</option><option value="true" ${state.filters.success === "true" ? "selected" : ""}>Успешные</option><option value="false" ${state.filters.success === "false" ? "selected" : ""}>Неуспешные</option></select><input class="field search" id="audit-action" placeholder="Действие, например auth.login" value="${esc(state.filters.action || "")}"><button class="button" id="audit-filter">Применить</button></div>${panelTable(["Время", "Пользователь / IP", "Действие", "Результат", "Детали"], rows, "Записей аудита нет")}${pagination(data)}`;
+  document.getElementById("audit-filter").onclick = () => { state.filters = { success: document.getElementById("audit-success").value, action: document.getElementById("audit-action").value.trim() }; state.offset = 0; render(); };
+  bindPagination();
+}
+
 function detailItem(label, value, wide = false, mono = false) {
   return `<div class="detail-item ${wide ? "wide" : ""}"><label>${esc(label)}</label><div class="${mono ? "mono" : ""}">${esc(value)}</div></div>`;
 }
@@ -191,12 +205,14 @@ async function render() {
     if (state.page === "computers") await renderComputers();
     if (state.page === "events") await renderEvents();
     if (state.page === "alerts") await renderAlerts();
+    if (state.page === "audit") await renderAudit();
   } catch (error) { showError(error); }
 }
 
 function route() {
   const requested = location.hash.replace("#", "") || "dashboard";
-  state.page = titles[requested] ? requested : "dashboard";
+  const roleAllowed = requested !== "audit" || ["admin", "security"].includes(currentUser?.role);
+  state.page = titles[requested] && roleAllowed ? requested : "dashboard";
   state.offset = 0; state.filters = {};
   document.getElementById("sidebar").classList.remove("open");
   render();
@@ -213,6 +229,14 @@ async function health() {
 }
 
 document.getElementById("refresh-button").onclick = render;
+document.getElementById("logout-button").onclick = async () => {
+  const csrf = document.cookie.split("; ").find(item => item.startsWith("flashcontrol_csrf="));
+  const token = csrf ? decodeURIComponent(csrf.split("=").slice(1).join("=")) : "";
+  const response = await fetch("/api/v1/auth/logout", {
+    method: "POST", headers: { "X-CSRF-Token": token, Accept: "application/json" }
+  });
+  if (response.ok || response.status === 401) window.location.assign("/login");
+};
 document.getElementById("menu-button").onclick = () => document.getElementById("sidebar").classList.toggle("open");
 document.getElementById("drawer-close").onclick = closeDrawer;
 backdrop.onclick = closeDrawer;
@@ -220,4 +244,11 @@ document.addEventListener("keydown", event => { if (event.key === "Escape") clos
 window.addEventListener("hashchange", route);
 setInterval(() => { document.getElementById("utc-clock").textContent = `UTC ${new Date().toISOString().slice(11, 19)}`; }, 1000);
 setInterval(health, 30000);
-health(); route();
+api("/auth/me").then(user => {
+  currentUser = user;
+  document.querySelectorAll("[data-roles]").forEach(item => {
+    item.hidden = !item.dataset.roles.split(",").includes(user.role);
+  });
+  document.getElementById("user-chip").textContent = `${user.username} · ${user.role}`;
+  health(); route();
+}).catch(showError);

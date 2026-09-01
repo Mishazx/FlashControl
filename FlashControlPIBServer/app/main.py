@@ -3,13 +3,15 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Body, Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .db import engine, get_db, initialize_database
+from .auth import AUTH_PROVIDER, AuthContext, optional_auth_context, router as auth_router
+from .config import ENVIRONMENT
 from .identity import register_computer, resolve_identity
 from .models import Observation
 from .read_api import router as read_router
@@ -22,15 +24,51 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="FlashControl Main Server", version="0.1.0", lifespan=lifespan)
+app = FastAPI(
+    title="FlashControl Main Server",
+    version="0.1.0",
+    lifespan=lifespan,
+    docs_url=None if ENVIRONMENT == "production" else "/docs",
+    redoc_url=None if ENVIRONMENT == "production" else "/redoc",
+    openapi_url=None if ENVIRONMENT == "production" else "/openapi.json",
+)
+app.include_router(auth_router)
 app.include_router(read_router)
 web_directory = Path(__file__).parent / "web"
 app.mount("/static", StaticFiles(directory=web_directory), name="static")
 
 
-@app.get("/", include_in_schema=False)
-def web_ui() -> FileResponse:
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+    if request.url.path in ("/", "/login"):
+        response.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+            "img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"
+        )
+        response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+@app.get("/", include_in_schema=False, response_model=None)
+def web_ui(
+    context: AuthContext | None = Depends(optional_auth_context),
+) -> FileResponse | RedirectResponse:
+    if context is None:
+        return RedirectResponse("/login", status_code=303)
     return FileResponse(web_directory / "index.html")
+
+
+@app.get("/login", include_in_schema=False)
+def login_page() -> FileResponse:
+    if AUTH_PROVIDER != "local":
+        raise HTTPException(status_code=503, detail="OIDC login is not implemented")
+    return FileResponse(web_directory / "login.html")
 
 
 def idempotent_insert(values: dict):

@@ -121,9 +121,58 @@ class IdentityDecision(Base):
     )
 
 
+class AuthUser(Base):
+    __tablename__ = "auth_users"
+
+    id: Mapped[object] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    username: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
+    password_hash: Mapped[str | None] = mapped_column(String(512))
+    role: Mapped[str] = mapped_column(String(32), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    created_at_utc: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+    last_login_at_utc: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class AuthSession(Base):
+    __tablename__ = "auth_sessions"
+
+    id: Mapped[object] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    user_id: Mapped[object] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("auth_users.id"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    csrf_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at_utc: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at_utc: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    last_seen_at_utc: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source_ip: Mapped[str | None] = mapped_column(String(128))
+    user_agent: Mapped[str | None] = mapped_column(String(512))
+
+
+class AuditLog(Base):
+    __tablename__ = "audit_log"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger().with_variant(Integer, "sqlite"), primary_key=True, autoincrement=True
+    )
+    user_id: Mapped[object | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("auth_users.id"))
+    username: Mapped[str | None] = mapped_column(String(128))
+    action: Mapped[str] = mapped_column(String(128), nullable=False)
+    success: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    source_ip: Mapped[str | None] = mapped_column(String(128))
+    details: Mapped[dict] = mapped_column(json_type, nullable=False)
+    created_at_utc: Mapped[datetime.datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=text("CURRENT_TIMESTAMP")
+    )
+
+
 Index("ix_observations_observed_at", Observation.observed_at_utc)
 Index("ix_observations_hostname", Observation.hostname)
 Index("ix_observations_user_sid", Observation.user_sid)
 Index("ix_observations_hardware_stable_hash", Observation.hardware_stable_sha256)
 Index("ix_observations_computer_id", Observation.computer_id)
 Index("ix_observations_physical_device_id", Observation.physical_device_id)
+Index("ix_audit_log_created_at", AuditLog.created_at_utc)
+Index("ix_audit_log_action", AuditLog.action)

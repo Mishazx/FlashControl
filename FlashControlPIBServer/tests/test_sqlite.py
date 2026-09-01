@@ -3,7 +3,6 @@ import shutil
 import tempfile
 import unittest
 import uuid
-from unittest.mock import patch
 
 
 TEST_DIRECTORY = tempfile.mkdtemp(prefix="flashcontrol-server-")
@@ -15,6 +14,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from app.db import SessionLocal, engine
+from app.auth import create_local_user
 from app.main import app
 from app.models import Computer, IdentityDecision, MediaState, Observation, PhysicalDevice
 
@@ -46,6 +46,15 @@ class SqliteApiTests(unittest.TestCase):
     def setUpClass(cls):
         cls.client_context = TestClient(app)
         cls.client = cls.client_context.__enter__()
+        with SessionLocal() as session:
+            create_local_user(session, "test-admin", "correct horse battery staple", "admin")
+            create_local_user(session, "test-auditor", "auditor password for tests", "auditor")
+        login = cls.client.post(
+            "/api/v1/auth/login",
+            json={"username": "test-admin", "password": "correct horse battery staple"},
+        )
+        if login.status_code != 200:
+            raise RuntimeError("test login failed: %s" % login.text)
 
     @classmethod
     def tearDownClass(cls):
@@ -56,6 +65,7 @@ class SqliteApiTests(unittest.TestCase):
     def test_health_endpoints(self):
         self.assertEqual(self.client.get("/health/live").status_code, 200)
         self.assertEqual(self.client.get("/health/ready").status_code, 200)
+        self.assertEqual(self.client.get("/docs").status_code, 200)
 
     def test_web_ui_and_assets_are_served(self):
         page = self.client.get("/")
@@ -64,6 +74,8 @@ class SqliteApiTests(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertIn("text/html", page.headers["content-type"])
         self.assertIn("FlashControl", page.text)
+        self.assertEqual(page.headers["x-frame-options"], "DENY")
+        self.assertIn("default-src 'self'", page.headers["content-security-policy"])
         self.assertEqual(styles.status_code, 200)
         self.assertIn("text/css", styles.headers["content-type"])
         self.assertEqual(script.status_code, 200)
@@ -240,10 +252,59 @@ class SqliteApiTests(unittest.TestCase):
             404,
         )
 
-    def test_read_api_is_closed_when_unauthenticated_access_is_disabled(self):
-        with patch("app.read_api.UNAUTHENTICATED_READ_API", False):
-            response = self.client.get("/api/v1/computers")
-        self.assertEqual(response.status_code, 403)
+    def test_authentication_session_csrf_and_roles(self):
+        guest = TestClient(app)
+        self.assertEqual(
+            guest.get("/", follow_redirects=False).status_code, 303
+        )
+        self.assertEqual(guest.get("/login").status_code, 200)
+        self.assertEqual(guest.get("/api/v1/computers").status_code, 401)
+        failed = guest.post(
+            "/api/v1/auth/login",
+            json={"username": "test-admin", "password": "wrong-password"},
+        )
+        self.assertEqual(failed.status_code, 401)
+
+        login = guest.post(
+            "/api/v1/auth/login",
+            json={"username": "test-auditor", "password": "auditor password for tests"},
+        )
+        self.assertEqual(login.status_code, 200)
+        self.assertIn("HttpOnly", login.headers.get("set-cookie", ""))
+        self.assertEqual(guest.get("/api/v1/auth/me").json()["role"], "auditor")
+        self.assertEqual(guest.get("/api/v1/computers").status_code, 200)
+        self.assertEqual(guest.get("/api/v1/audit-log").status_code, 403)
+        self.assertEqual(guest.post("/api/v1/auth/logout").status_code, 403)
+        csrf = guest.cookies.get("flashcontrol_csrf")
+        logout = guest.post(
+            "/api/v1/auth/logout", headers={"X-CSRF-Token": csrf}
+        )
+        self.assertEqual(logout.status_code, 200)
+        self.assertEqual(guest.get("/api/v1/computers").status_code, 401)
+        guest.close()
+
+        self.assertEqual(self.client.get("/api/v1/audit-log").status_code, 200)
+
+    def test_login_attempts_are_rate_limited_and_audited(self):
+        guest = TestClient(app)
+        for _index in range(5):
+            response = guest.post(
+                "/api/v1/auth/login",
+                json={"username": "missing-user", "password": "incorrect password value"},
+            )
+            self.assertEqual(response.status_code, 401)
+        blocked = guest.post(
+            "/api/v1/auth/login",
+            json={"username": "missing-user", "password": "incorrect password value"},
+        )
+        self.assertEqual(blocked.status_code, 429)
+        audit_response = self.client.get(
+            "/api/v1/audit-log",
+            params={"action": "auth.login", "success": False},
+        )
+        self.assertEqual(audit_response.status_code, 200)
+        self.assertGreaterEqual(audit_response.json()["total"], 5)
+        guest.close()
 
 
 if __name__ == "__main__":

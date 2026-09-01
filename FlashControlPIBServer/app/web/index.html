@@ -21,6 +21,7 @@
         <a href="#computers" data-page="computers"><span>▤</span>Компьютеры</a>
         <a href="#events" data-page="events"><span>≋</span>События</a>
         <a href="#alerts" data-page="alerts"><span>△</span>Коллизии</a>
+        <a href="#audit" data-page="audit" data-roles="admin,security" hidden><span>◎</span>Журнал действий</a>
       </nav>
       <div class="sidebar-foot">
         <span class="status-dot" id="server-dot"></span>
@@ -36,8 +37,10 @@
           <h1 id="page-title">Обзор</h1>
         </div>
         <div class="topbar-actions">
+          <span class="user-chip" id="user-chip">…</span>
           <span class="utc-clock" id="utc-clock">UTC --:--:--</span>
           <button class="button ghost" id="refresh-button">Обновить</button>
+          <button class="button ghost" id="logout-button">Выйти</button>
         </div>
       </header>
       <section class="content" id="content" aria-live="polite"></section>

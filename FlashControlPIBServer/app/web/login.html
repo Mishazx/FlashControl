@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Вход — FlashControl</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/login.css">
+</head>
+<body class="login-page">
+  <main class="login-card">
+    <div class="login-brand"><span class="brand-mark">FC</span><div><strong>FlashControl</strong><small>SECURITY CONSOLE</small></div></div>
+    <div class="login-copy"><p class="eyebrow">DEV AUTHENTICATION</p><h1>Вход в систему аудита</h1><p>Используйте локальную учётную запись среды разработки.</p></div>
+    <form id="login-form">
+      <label>Имя пользователя<input class="field" id="username" name="username" autocomplete="username" required autofocus maxlength="128"></label>
+      <label>Пароль<input class="field" id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024"></label>
+      <p class="login-error" id="login-error" role="alert" hidden></p>
+      <button class="button login-submit" type="submit">Войти</button>
+    </form>
+    <p class="login-note">Production использует только корпоративный Identity Provider.</p>
+  </main>
+  <script src="/static/login.js" defer></script>
+</body>
+</html>

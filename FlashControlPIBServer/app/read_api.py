@@ -5,23 +5,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import desc, func, select
 from sqlalchemy.orm import Session
 
-from .config import UNAUTHENTICATED_READ_API
+from .auth import require_read_user, require_roles
 from .db import get_db
-from .models import Computer, IdentityDecision, MediaState, Observation, PhysicalDevice
-
-
-def require_read_access() -> None:
-    if not UNAUTHENTICATED_READ_API:
-        raise HTTPException(
-            status_code=403,
-            detail="read API requires authentication in production",
-        )
+from .models import AuditLog, Computer, IdentityDecision, MediaState, Observation, PhysicalDevice
 
 
 router = APIRouter(
     prefix="/api/v1",
     tags=["audit-read"],
-    dependencies=[Depends(require_read_access)],
+    dependencies=[Depends(require_read_user)],
 )
 
 Limit = Annotated[int, Query(ge=1, le=200)]
@@ -327,5 +319,34 @@ def list_identity_alerts(
         value["hostname"] = row[1].hostname
         value["observed_at_utc"] = row[1].observed_at_utc
         return value
+
+    return page(db, statement, limit, offset, serialize)
+
+
+@router.get("/audit-log", dependencies=[Depends(require_roles("admin", "security"))])
+def list_audit_log(
+    limit: Limit = 50,
+    offset: Offset = 0,
+    action: str | None = None,
+    success: bool | None = None,
+    db: Session = Depends(get_db),
+) -> dict:
+    statement = select(AuditLog).order_by(desc(AuditLog.created_at_utc), desc(AuditLog.id))
+    if action:
+        statement = statement.where(AuditLog.action == action)
+    if success is not None:
+        statement = statement.where(AuditLog.success == success)
+
+    def serialize(row):
+        item = row[0]
+        return {
+            "id": item.id,
+            "username": item.username,
+            "action": item.action,
+            "success": item.success,
+            "source_ip": item.source_ip,
+            "details": item.details,
+            "created_at_utc": item.created_at_utc,
+        }
 
     return page(db, statement, limit, offset, serialize)
