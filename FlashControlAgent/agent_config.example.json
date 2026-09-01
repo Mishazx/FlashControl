@@ -2,6 +2,11 @@
   "server_url": "https://example.local/api/flashcontrol",
   "interval_seconds": 3600,
   "request_timeout_seconds": 30,
+  "queue_file": "FlashControlAgent.queue.db",
+  "queue_max_items": 100000,
+  "retry_interval_seconds": 30,
+  "retry_max_seconds": 3600,
+  "delivery_batch_size": 100,
   "collector_args": [],
   "include_non_usb": false,
   "log_file": "FlashControlAgent.log"

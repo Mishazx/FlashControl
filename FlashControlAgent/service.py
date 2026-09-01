@@ -15,6 +15,8 @@ import urllib.error
 import urllib.request
 from logging.handlers import RotatingFileHandler
 
+from delivery_queue import DeliveryQueue, deliver_due
+
 import servicemanager
 import win32event
 import win32service
@@ -32,6 +34,11 @@ DEFAULT_CONFIG = {
     "collector_args": [],
     "include_non_usb": False,
     "log_file": "FlashControlAgent.log",
+    "queue_file": "FlashControlAgent.queue.db",
+    "queue_max_items": 100000,
+    "retry_interval_seconds": 30,
+    "retry_max_seconds": 3600,
+    "delivery_batch_size": 100,
 }
 
 
@@ -77,6 +84,13 @@ def read_config():
 
 def log_path(config):
     filename = config.get("log_file") or DEFAULT_CONFIG["log_file"]
+    if os.path.isabs(filename):
+        return filename
+    return os.path.join(app_dir(), filename)
+
+
+def queue_path(config):
+    filename = config.get("queue_file") or DEFAULT_CONFIG["queue_file"]
     if os.path.isabs(filename):
         return filename
     return os.path.join(app_dir(), filename)
@@ -140,6 +154,31 @@ def post_json(server_url, json_text, timeout_seconds):
         return response.getcode()
 
 
+def drain_delivery_queue(queue, server_url, timeout_seconds, batch_size,
+                         retry_interval_seconds, retry_max_seconds, logger):
+    def sender(payload_json):
+        status_code = post_json(server_url, payload_json, timeout_seconds)
+        if status_code < 200 or status_code >= 300:
+            raise RuntimeError("server returned HTTP %s" % status_code)
+
+    def log_failure(event_id, exc, delay):
+        logger.warning(
+            "delivery failed for event_id=%s; retry in %ss: %s",
+            event_id,
+            int(delay or retry_interval_seconds),
+            exc,
+        )
+
+    return deliver_due(
+        queue,
+        sender,
+        limit=batch_size,
+        base_delay=retry_interval_seconds,
+        max_delay=retry_max_seconds,
+        on_failure=log_failure,
+    )
+
+
 class FlashControlAgentService(win32serviceutil.ServiceFramework):
     _svc_name_ = SERVICE_NAME
     _svc_display_name_ = SERVICE_DISPLAY_NAME
@@ -172,33 +211,61 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
         timeout_seconds = int(self.config.get("request_timeout_seconds") or 30)
         if timeout_seconds < 1:
             timeout_seconds = 30
+        retry_interval_seconds = max(
+            1, int(self.config.get("retry_interval_seconds") or 30)
+        )
+        retry_max_seconds = max(
+            retry_interval_seconds, int(self.config.get("retry_max_seconds") or 3600)
+        )
+        batch_size = max(1, int(self.config.get("delivery_batch_size") or 100))
 
         collector_args = self.config.get("collector_args") or []
         if self.config.get("include_non_usb"):
             collector_args = list(collector_args) + ["--all-disks"]
 
-        while True:
-            cycle_started = time.time()
-            try:
-                self.logger.info("collection cycle started")
-                payload = capture_collector_json(collector_args)
+        queue = DeliveryQueue(
+            queue_path(self.config),
+            max_items=int(self.config.get("queue_max_items") or 100000),
+        )
+        next_collection_at = 0
+        try:
+            while True:
+                now = time.time()
+                if now >= next_collection_at:
+                    try:
+                        self.logger.info("collection cycle started")
+                        payload = capture_collector_json(collector_args)
+                        event_ids = queue.enqueue_json(payload)
+                        self.logger.info(
+                            "queued %s observation(s); queue_size=%s",
+                            len(event_ids),
+                            queue.count(),
+                        )
+                    except Exception:
+                        self.logger.exception("collection cycle failed")
+                    next_collection_at = time.time() + interval_seconds
+
                 server_url = (self.config.get("server_url") or "").strip()
                 if server_url:
-                    status_code = post_json(server_url, payload, timeout_seconds)
-                    self.logger.info("sent payload to %s with status %s", server_url, status_code)
-                else:
-                    self.logger.info("collector payload ready, server_url is not configured")
-            except Exception:
-                self.logger.exception("collection cycle failed")
+                    delivered = drain_delivery_queue(
+                        queue, server_url, timeout_seconds, batch_size,
+                        retry_interval_seconds, retry_max_seconds, self.logger,
+                    )
+                    if delivered:
+                        self.logger.info(
+                            "delivered %s observation(s); queue_size=%s",
+                            delivered,
+                            queue.count(),
+                        )
 
-            elapsed = time.time() - cycle_started
-            wait_seconds = interval_seconds - elapsed
-            if wait_seconds < 1:
-                wait_seconds = 1
-
-            wait_result = win32event.WaitForSingleObject(self.stop_event, int(wait_seconds * 1000))
-            if wait_result == win32event.WAIT_OBJECT_0:
-                break
+                wait_seconds = min(retry_interval_seconds, max(1, next_collection_at - time.time()))
+                wait_result = win32event.WaitForSingleObject(
+                    self.stop_event, int(wait_seconds * 1000)
+                )
+                if wait_result == win32event.WAIT_OBJECT_0:
+                    break
+        finally:
+            queue.close()
 
 
 def service_main():

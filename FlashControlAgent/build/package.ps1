@@ -27,6 +27,7 @@ python -m PyInstaller `
     --name FlashControlAgentService `
     --hidden-import win32timezone `
     --hidden-import main `
+    --hidden-import delivery_queue `
     --collect-all pywin32 `
     --distpath $OutputDir `
     --workpath $pyiWork `

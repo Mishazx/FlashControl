@@ -33,7 +33,7 @@ import uuid
 
 
 SCHEMA_VERSION = 1
-PROBE_VERSION = "0.1.0"
+PROBE_VERSION = "0.4.0"
 
 
 # ---- Константы Win32 ---------------------------------------------------------

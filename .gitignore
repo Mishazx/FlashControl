@@ -5,6 +5,9 @@ FlashControlAgent/dist/
 # Generated runtime files
 FlashControlAgent/*.log
 FlashControlAgent/agent_config.json
+FlashControlAgent/*.queue.db
+FlashControlAgent/*.queue.db-shm
+FlashControlAgent/*.queue.db-wal
 
 # Python bytecode
 __pycache__/
