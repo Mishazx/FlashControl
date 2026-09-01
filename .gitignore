@@ -1,0 +1,11 @@
+# Build outputs
+FlashControlAgent/build-artifacts/
+FlashControlAgent/dist/
+
+# Generated runtime files
+FlashControlAgent/*.log
+FlashControlAgent/agent_config.json
+
+# Python bytecode
+__pycache__/
+*.py[cod]

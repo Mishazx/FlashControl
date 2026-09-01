@@ -1,0 +1,8 @@
+{
+  "server_url": "https://example.local/api/flashcontrol",
+  "interval_seconds": 3600,
+  "request_timeout_seconds": 30,
+  "collector_args": [],
+  "include_non_usb": false,
+  "log_file": "FlashControlAgent.log"
+}
