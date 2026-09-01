@@ -242,14 +242,14 @@ class UsbEvidenceTests(unittest.TestCase):
             {"device_instance_id": "ACPI\\PNP0A08"},
         ]))
 
-    def test_hardware_and_compatible_ids_are_sorted_in_hardware_evidence(self):
+    def test_hardware_and_compatible_ids_are_sorted_in_pnp_observation(self):
         record = copy_record(base_record())
         record["pnp"]["nodes"][0]["hardware_ids"] = ["B", "A"]
         record["pnp"]["nodes"][0]["compatible_ids"] = ["Y", "X"]
         record["pnp"]["nodes"][1]["hardware_ids"] = ["D", "C"]
         record["pnp"]["nodes"][1]["compatible_ids"] = ["Q", "P"]
 
-        evidence = probe.hardware_evidence(record)
+        evidence = probe.pnp_observation_evidence(record)
         self.assertEqual(evidence["pnp_device_nodes"][0]["hardware_ids"], ["A", "B"])
         self.assertEqual(evidence["pnp_device_nodes"][0]["compatible_ids"], ["X", "Y"])
         self.assertEqual(evidence["pnp_device_nodes"][1]["hardware_ids"], ["C", "D"])

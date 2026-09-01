@@ -8,8 +8,10 @@ CREATE TABLE IF NOT EXISTS observations (
     received_at_utc TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     hostname VARCHAR(255),
     user_sid VARCHAR(255),
-    hardware_evidence_sha256 VARCHAR(64),
-    media_evidence_sha256 VARCHAR(64),
+    hardware_stable_sha256 VARCHAR(64),
+    pnp_observation_sha256 VARCHAR(64),
+    media_identity_sha256 VARCHAR(64),
+    media_state_sha256 VARCHAR(64),
     observation_sha256 VARCHAR(64),
     host JSONB NOT NULL,
     session JSONB NOT NULL,
@@ -24,5 +26,5 @@ CREATE TABLE IF NOT EXISTS observations (
 CREATE INDEX IF NOT EXISTS ix_observations_observed_at ON observations (observed_at_utc);
 CREATE INDEX IF NOT EXISTS ix_observations_hostname ON observations (hostname);
 CREATE INDEX IF NOT EXISTS ix_observations_user_sid ON observations (user_sid);
-CREATE INDEX IF NOT EXISTS ix_observations_hardware_hash ON observations (hardware_evidence_sha256);
+CREATE INDEX IF NOT EXISTS ix_observations_hardware_stable_hash ON observations (hardware_stable_sha256);
 

@@ -33,7 +33,7 @@ import uuid
 
 
 SCHEMA_VERSION = 1
-PROBE_VERSION = "0.4.0-dev"
+PROBE_VERSION = "0.1.0"
 
 
 # ---- Константы Win32 ---------------------------------------------------------
@@ -1558,50 +1558,54 @@ def canonical_sha256(value):
     return hashlib.sha256(payload).hexdigest()
 
 
-def hardware_evidence(record):
-    storage = record.get("storage") or {}
-    geometry = record.get("geometry") or {}
-    vpd83 = record.get("vpd83") or []
-    vpd80 = record.get("vpd80") or {}
-    pnp = record.get("pnp") or {}
-    usb = pnp.get("usb") or {}
-    serial_candidate = usb.get("serial_candidate") or {}
-
-    nodes = pnp.get("nodes") or []
-    device_nodes = []
-    # Only the disk and actual USB device nodes are hardware evidence. Parents
-    # above them identify the host controller and port.
-    for node in nodes[:2]:
-        device_nodes.append({
-            "hardware_ids": sorted(node.get("hardware_ids") or []),
-            "compatible_ids": sorted(node.get("compatible_ids") or []),
-            "service": node.get("service"),
-            "class": node.get("class"),
-        })
-
-    normalized_vpd83 = []
-    for item in vpd83:
-        normalized_vpd83.append({
+def normalize_vpd83(vpd83):
+    normalized = []
+    for item in vpd83 or []:
+        normalized.append({
             "code_set": item.get("code_set"),
             "type": item.get("type"),
             "association": item.get("association"),
             "value_hex": item.get("value_hex"),
         })
-    normalized_vpd83.sort(key=lambda item: (
+    normalized.sort(key=lambda item: (
         item.get("association") if item.get("association") is not None else -1,
         item.get("type") if item.get("type") is not None else -1,
         item.get("code_set") if item.get("code_set") is not None else -1,
         item.get("value_hex") or "",
     ))
+    return normalized
+
+
+def partition_sort_key(partition):
+    return (
+        partition.get("number") if partition.get("number") is not None else -1,
+        partition.get("offset") if partition.get("offset") is not None else -1,
+        partition.get("entry_index") if partition.get("entry_index") is not None else -1,
+    )
+
+
+def volume_sort_key(volume):
+    return (
+        volume.get("partition_number") if volume.get("partition_number") is not None else -1,
+    )
+
+
+def hardware_stable_evidence(record):
+    storage = record.get("storage") or {}
+    geometry = record.get("geometry") or {}
+    vpd80 = record.get("vpd80") or {}
+    pnp = record.get("pnp") or {}
+    usb = pnp.get("usb") or {}
+    serial_candidate = usb.get("serial_candidate") or {}
 
     return {
         "usb": {
             "vid": usb.get("vid"),
             "pid": usb.get("pid"),
             "serial_candidate": (
-            serial_candidate.get("value")
-            if not serial_candidate.get("likely_port_specific")
-            else None
+                serial_candidate.get("value")
+                if not serial_candidate.get("likely_port_specific")
+                else None
             ),
         },
         "storage": {
@@ -1616,33 +1620,37 @@ def hardware_evidence(record):
             "size_bytes": geometry.get("size_bytes"),
             "bytes_per_sector": geometry.get("bytes_per_sector"),
         },
-        "pnp_device_nodes": device_nodes,
         "vpd80": {
             "serial": vpd80.get("serial"),
         },
-        "vpd83": normalized_vpd83,
+        "vpd83": normalize_vpd83(record.get("vpd83")),
     }
 
 
-def hardware_evidence_hash(record):
-    return canonical_sha256(hardware_evidence(record))
+def pnp_observation_evidence(record):
+    nodes = (record.get("pnp") or {}).get("nodes") or []
+    device_nodes = []
+    # Only the disk and actual USB device nodes are PnP evidence. Parents
+    # above them identify the host controller and port.
+    for node in nodes[:2]:
+        device_nodes.append({
+            "hardware_ids": sorted(node.get("hardware_ids") or []),
+            "compatible_ids": sorted(node.get("compatible_ids") or []),
+            "service": node.get("service"),
+            "class": node.get("class"),
+        })
+    return {
+        "pnp_device_nodes": device_nodes,
+    }
 
 
-def media_evidence(record):
+def media_identity_evidence(record):
     layout = record.get("layout") or {}
     volumes = record.get("volumes") or []
     partitions = layout.get("partitions") or []
 
     normalized_partitions = []
-
-    for partition in sorted(
-        partitions,
-        key=lambda x: (
-            x.get("number") if x.get("number") is not None else -1,
-            x.get("offset") if x.get("offset") is not None else -1,
-            x.get("entry_index") if x.get("entry_index") is not None else -1,
-        ),
-    ):
+    for partition in sorted(partitions, key=partition_sort_key):
         normalized_partitions.append({
             "style": partition.get("partition_style_name"),
             "number": partition.get("number"),
@@ -1655,22 +1663,14 @@ def media_evidence(record):
             "partition_type_guid": partition.get("partition_type_guid"),
             "partition_guid": partition.get("partition_guid"),
             "attributes": partition.get("attributes"),
-            "name": partition.get("name"),
             "is_unused": partition.get("is_unused"),
         })
 
     normalized_volumes = []
-    for item in sorted(
-        volumes,
-        key=lambda x: (
-            x.get("partition_number") if x.get("partition_number") is not None else -1,
-        ),
-    ):
+    for item in sorted(volumes, key=volume_sort_key):
         normalized_volumes.append({
             "partition_number": item.get("partition_number"),
-            "filesystem": item.get("filesystem"),
             "volume_serial": item.get("volume_serial"),
-            "volume_label": item.get("volume_label"),
         })
 
     return {
@@ -1684,14 +1684,54 @@ def media_evidence(record):
     }
 
 
-def media_evidence_hash(record):
-    return canonical_sha256(media_evidence(record))
+def media_state_evidence(record):
+    layout = record.get("layout") or {}
+    volumes = record.get("volumes") or []
+    partitions = layout.get("partitions") or []
+
+    normalized_partitions = []
+    for partition in sorted(partitions, key=partition_sort_key):
+        normalized_partitions.append({
+            "number": partition.get("number"),
+            "name": partition.get("name"),
+        })
+
+    normalized_volumes = []
+    for item in sorted(volumes, key=volume_sort_key):
+        normalized_volumes.append({
+            "partition_number": item.get("partition_number"),
+            "filesystem": item.get("filesystem"),
+            "volume_label": item.get("volume_label"),
+        })
+
+    return {
+        "partitions": normalized_partitions,
+        "volumes": normalized_volumes,
+    }
 
 
-def observation_hash(hardware_hash, media_hash):
+def hardware_stable_hash(record):
+    return canonical_sha256(hardware_stable_evidence(record))
+
+
+def pnp_observation_hash(record):
+    return canonical_sha256(pnp_observation_evidence(record))
+
+
+def media_identity_hash(record):
+    return canonical_sha256(media_identity_evidence(record))
+
+
+def media_state_hash(record):
+    return canonical_sha256(media_state_evidence(record))
+
+
+def observation_hash(hardware_stable, pnp_observation, media_identity, media_state):
     return canonical_sha256({
-        "hardware_evidence_sha256": hardware_hash,
-        "media_evidence_sha256": media_hash,
+        "hardware_stable_sha256": hardware_stable,
+        "pnp_observation_sha256": pnp_observation,
+        "media_identity_sha256": media_identity,
+        "media_state_sha256": media_state,
     })
 
 
@@ -1808,12 +1848,21 @@ def scan_physical_disks(max_disks=64, include_non_usb=False, enable_vpd80=False)
                 },
             }
 
-            hardware_hash = hardware_evidence_hash(record)
-            media_hash = media_evidence_hash(record)
-            record["fingerprint_version"] = 1
-            record["hardware_evidence_sha256"] = hardware_hash
-            record["media_evidence_sha256"] = media_hash
-            record["observation_sha256"] = observation_hash(hardware_hash, media_hash)
+            hardware_stable = hardware_stable_hash(record)
+            pnp_observation = pnp_observation_hash(record)
+            media_identity = media_identity_hash(record)
+            media_state = media_state_hash(record)
+            record["fingerprint_version"] = 2
+            record["hardware_stable_sha256"] = hardware_stable
+            record["pnp_observation_sha256"] = pnp_observation
+            record["media_identity_sha256"] = media_identity
+            record["media_state_sha256"] = media_state
+            record["observation_sha256"] = observation_hash(
+                hardware_stable,
+                pnp_observation,
+                media_identity,
+                media_state,
+            )
             devices.append(record)
 
         finally:

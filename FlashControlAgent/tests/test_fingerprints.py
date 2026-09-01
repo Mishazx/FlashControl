@@ -10,7 +10,7 @@ from probe_support import base_record, copy_record, probe
 
 
 class FingerprintTests(unittest.TestCase):
-    def test_hardware_hash_ignores_non_hardware_noise(self):
+    def test_hardware_stable_hash_ignores_non_intrinsic_noise(self):
         baseline = copy_record(base_record())
         variant = copy_record(base_record())
         variant["physical_drive"] = 99
@@ -21,69 +21,58 @@ class FingerprintTests(unittest.TestCase):
         variant["pnp"]["nodes"][2]["device_instance_id"] = "PCI\\VEN_8086&DEV_9999"
         variant["pnp"]["nodes"][1]["hardware_ids"] = list(reversed(variant["pnp"]["nodes"][1]["hardware_ids"]))
         variant["pnp"]["nodes"][1]["compatible_ids"] = list(reversed(variant["pnp"]["nodes"][1]["compatible_ids"]))
+        variant["pnp"]["nodes"][0]["hardware_ids"] = ["USBSTOR\\OTHER"]
         variant["vpd83"] = list(reversed(variant["vpd83"]))
 
         self.assertEqual(
-            probe.hardware_evidence_hash(baseline),
-            probe.hardware_evidence_hash(variant),
+            probe.hardware_stable_hash(baseline),
+            probe.hardware_stable_hash(variant),
         )
 
-    def test_hardware_hash_changes_for_key_hardware_inputs(self):
+    def test_hardware_stable_hash_changes_for_intrinsic_inputs(self):
         baseline = copy_record(base_record())
-        baseline_hash = probe.hardware_evidence_hash(baseline)
+        baseline_hash = probe.hardware_stable_hash(baseline)
 
         mutations = [
-            ("vid", "4321", lambda record: record["pnp"]["usb"].__setitem__("vid", "4321")),
-            ("pid", "8765", lambda record: record["pnp"]["usb"].__setitem__("pid", "8765")),
+            ("vid", lambda record: record["pnp"]["usb"].__setitem__("vid", "4321")),
+            ("pid", lambda record: record["pnp"]["usb"].__setitem__("pid", "8765")),
             (
                 "serial",
-                "NEWDISK",
                 lambda record: record["storage"].__setitem__("serial", "NEWDISK"),
             ),
             (
                 "vendor",
-                "OtherVendor",
                 lambda record: record["storage"].__setitem__("vendor", "OtherVendor"),
             ),
             (
                 "product",
-                "OtherProduct",
                 lambda record: record["storage"].__setitem__("product", "OtherProduct"),
             ),
             (
                 "revision",
-                "9.99",
                 lambda record: record["storage"].__setitem__("revision", "9.99"),
             ),
             (
                 "capacity",
-                123,
                 lambda record: record["geometry"].__setitem__("size_bytes", 123),
             ),
             (
                 "sector_size",
-                4096,
                 lambda record: record["geometry"].__setitem__("bytes_per_sector", 4096),
             ),
             (
                 "vpd83",
-                "different",
                 lambda record: record["vpd83"][0].__setitem__("value_hex", "deadbeef"),
-            ),
-            (
-                "hardware_ids",
-                "changed",
-                lambda record: record["pnp"]["nodes"][0].__setitem__("hardware_ids", ["ZZZ"]),
             ),
         ]
 
-        for name, _, mutate in mutations:
+        for name, mutate in mutations:
             with self.subTest(name=name):
                 variant = copy_record(base_record())
                 mutate(variant)
-                self.assertNotEqual(baseline_hash, probe.hardware_evidence_hash(variant))
+                self.assertNotEqual(baseline_hash, probe.hardware_stable_hash(variant))
 
-    def test_port_specific_serial_candidate_does_not_change_hardware_hash(self):
+    def test_port_specific_serial_candidate_does_not_change_hardware_stable_hash(self):
         baseline = copy_record(base_record())
         variant = copy_record(base_record())
         baseline["pnp"]["usb"]["serial_candidate"]["likely_port_specific"] = True
@@ -91,27 +80,52 @@ class FingerprintTests(unittest.TestCase):
         variant["pnp"]["usb"]["serial_candidate"]["value"] = "DIFFERENT"
 
         self.assertEqual(
-            probe.hardware_evidence_hash(baseline),
-            probe.hardware_evidence_hash(variant),
+            probe.hardware_stable_hash(baseline),
+            probe.hardware_stable_hash(variant),
         )
 
-    def test_media_hash_ignores_path_noise_and_order(self):
+    def test_pnp_observation_hash_ignores_order_and_parent_nodes(self):
+        baseline = copy_record(base_record())
+        variant = copy_record(base_record())
+        variant["pnp"]["nodes"][2]["device_instance_id"] = "PCI\\VEN_8086&DEV_9999"
+        variant["pnp"]["nodes"][1]["hardware_ids"] = list(reversed(variant["pnp"]["nodes"][1]["hardware_ids"]))
+        variant["pnp"]["nodes"][1]["compatible_ids"] = list(reversed(variant["pnp"]["nodes"][1]["compatible_ids"]))
+
+        self.assertEqual(
+            probe.pnp_observation_hash(baseline),
+            probe.pnp_observation_hash(variant),
+        )
+
+    def test_pnp_observation_hash_changes_for_hardware_ids(self):
+        baseline = copy_record(base_record())
+        variant = copy_record(base_record())
+        variant["pnp"]["nodes"][0]["hardware_ids"] = ["USBSTOR\\OTHER"]
+
+        self.assertNotEqual(
+            probe.pnp_observation_hash(baseline),
+            probe.pnp_observation_hash(variant),
+        )
+
+    def test_media_identity_hash_ignores_state_and_path_noise(self):
         baseline = copy_record(base_record())
         variant = copy_record(base_record())
         variant["volumes"][0]["drive_letters"] = ["X:"]
         variant["volumes"][0]["mount_paths"] = [r"X:\\"]
         variant["volumes"][0]["volume_guid"] = r"\\?\Volume{aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa}\\"
+        variant["volumes"][0]["filesystem"] = "FAT32"
+        variant["volumes"][0]["volume_label"] = "RENAMED"
+        variant["layout"]["partitions"][0]["name"] = "Other GPT Name"
         variant["layout"]["partitions"] = list(reversed(variant["layout"]["partitions"]))
         variant["volumes"] = list(reversed(variant["volumes"]))
 
         self.assertEqual(
-            probe.media_evidence_hash(baseline),
-            probe.media_evidence_hash(variant),
+            probe.media_identity_hash(baseline),
+            probe.media_identity_hash(variant),
         )
 
-    def test_media_hash_changes_for_media_inputs(self):
+    def test_media_identity_hash_changes_for_identity_inputs(self):
         baseline = copy_record(base_record())
-        baseline_hash = probe.media_evidence_hash(baseline)
+        baseline_hash = probe.media_identity_hash(baseline)
 
         mutations = [
             ("mbr_signature", lambda record: record["layout"].__setitem__("mbr_signature", "DEADBEEF")),
@@ -119,31 +133,80 @@ class FingerprintTests(unittest.TestCase):
             ("partition_offset", lambda record: record["layout"]["partitions"][0].__setitem__("offset", 12345)),
             ("partition_length", lambda record: record["layout"]["partitions"][0].__setitem__("length", 54321)),
             ("partition_type", lambda record: record["layout"]["partitions"][0].__setitem__("mbr_type", 99)),
-            ("filesystem", lambda record: record["volumes"][0].__setitem__("filesystem", "FAT32")),
             ("volume_serial", lambda record: record["volumes"][0].__setitem__("volume_serial", "12345678")),
-            ("volume_label", lambda record: record["volumes"][0].__setitem__("volume_label", "OTHER")),
         ]
 
         for name, mutate in mutations:
             with self.subTest(name=name):
                 variant = copy_record(base_record())
                 mutate(variant)
-                self.assertNotEqual(baseline_hash, probe.media_evidence_hash(variant))
+                self.assertNotEqual(baseline_hash, probe.media_identity_hash(variant))
 
-    def test_observation_hash_changes_when_either_component_changes(self):
-        hardware_hash = probe.hardware_evidence_hash(base_record())
-        media_hash = probe.media_evidence_hash(base_record())
+    def test_media_state_hash_changes_for_mutable_media_inputs(self):
+        baseline = copy_record(base_record())
+        baseline_hash = probe.media_state_hash(baseline)
+
+        mutations = [
+            ("filesystem", lambda record: record["volumes"][0].__setitem__("filesystem", "FAT32")),
+            ("volume_label", lambda record: record["volumes"][0].__setitem__("volume_label", "OTHER")),
+            ("partition_name", lambda record: record["layout"]["partitions"][0].__setitem__("name", "Renamed")),
+        ]
+
+        for name, mutate in mutations:
+            with self.subTest(name=name):
+                variant = copy_record(base_record())
+                mutate(variant)
+                self.assertNotEqual(baseline_hash, probe.media_state_hash(variant))
+
+    def test_media_state_hash_ignores_identity_inputs(self):
+        baseline = copy_record(base_record())
+        variant = copy_record(base_record())
+        variant["layout"]["mbr_signature"] = "DEADBEEF"
+        variant["layout"]["gpt_disk_guid"] = "feedface"
+        variant["layout"]["partitions"][0]["offset"] = 12345
+        variant["volumes"][0]["volume_serial"] = "12345678"
+
         self.assertEqual(
-            probe.observation_hash(hardware_hash, media_hash),
-            probe.observation_hash(hardware_hash, media_hash),
+            probe.media_state_hash(baseline),
+            probe.media_state_hash(variant),
+        )
+
+    def test_observation_hash_changes_when_any_component_changes(self):
+        hardware_stable = probe.hardware_stable_hash(base_record())
+        pnp_observation = probe.pnp_observation_hash(base_record())
+        media_identity = probe.media_identity_hash(base_record())
+        media_state = probe.media_state_hash(base_record())
+
+        baseline = probe.observation_hash(
+            hardware_stable,
+            pnp_observation,
+            media_identity,
+            media_state,
+        )
+        self.assertEqual(
+            baseline,
+            probe.observation_hash(
+                hardware_stable,
+                pnp_observation,
+                media_identity,
+                media_state,
+            ),
         )
         self.assertNotEqual(
-            probe.observation_hash("a" * 64, media_hash),
-            probe.observation_hash("b" * 64, media_hash),
+            baseline,
+            probe.observation_hash("a" * 64, pnp_observation, media_identity, media_state),
         )
         self.assertNotEqual(
-            probe.observation_hash(hardware_hash, "a" * 64),
-            probe.observation_hash(hardware_hash, "b" * 64),
+            baseline,
+            probe.observation_hash(hardware_stable, "a" * 64, media_identity, media_state),
+        )
+        self.assertNotEqual(
+            baseline,
+            probe.observation_hash(hardware_stable, pnp_observation, "a" * 64, media_state),
+        )
+        self.assertNotEqual(
+            baseline,
+            probe.observation_hash(hardware_stable, pnp_observation, media_identity, "a" * 64),
         )
 
 

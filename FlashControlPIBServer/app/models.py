@@ -26,8 +26,10 @@ class Observation(Base):
 
     hostname: Mapped[str | None] = mapped_column(String(255))
     user_sid: Mapped[str | None] = mapped_column(String(255))
-    hardware_evidence_sha256: Mapped[str | None] = mapped_column(String(64))
-    media_evidence_sha256: Mapped[str | None] = mapped_column(String(64))
+    hardware_stable_sha256: Mapped[str | None] = mapped_column(String(64))
+    pnp_observation_sha256: Mapped[str | None] = mapped_column(String(64))
+    media_identity_sha256: Mapped[str | None] = mapped_column(String(64))
+    media_state_sha256: Mapped[str | None] = mapped_column(String(64))
     observation_sha256: Mapped[str | None] = mapped_column(String(64))
 
     host: Mapped[dict] = mapped_column(JSONB, nullable=False)
@@ -44,5 +46,5 @@ class Observation(Base):
 Index("ix_observations_observed_at", Observation.observed_at_utc)
 Index("ix_observations_hostname", Observation.hostname)
 Index("ix_observations_user_sid", Observation.user_sid)
-Index("ix_observations_hardware_hash", Observation.hardware_evidence_sha256)
+Index("ix_observations_hardware_stable_hash", Observation.hardware_stable_sha256)
 
