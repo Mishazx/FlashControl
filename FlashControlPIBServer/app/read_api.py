@@ -1,3 +1,4 @@
+import datetime
 import uuid
 from typing import Annotated
 
@@ -7,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from .auth import require_read_user, require_roles
 from .db import get_db
-from .models import AuditLog, Computer, IdentityDecision, MediaState, Observation, PhysicalDevice
+from .models import Agent, AuditLog, Computer, IdentityDecision, MediaState, Observation, PhysicalDevice
 
 
 router = APIRouter(
@@ -18,6 +19,7 @@ router = APIRouter(
 
 Limit = Annotated[int, Query(ge=1, le=200)]
 Offset = Annotated[int, Query(ge=0)]
+AGENT_ONLINE_WINDOW = datetime.timedelta(minutes=3)
 
 
 def page(db: Session, statement, limit: int, offset: int, serializer):
@@ -96,6 +98,7 @@ def observation_summary(observation: Observation, decision: IdentityDecision | N
 
 @router.get("/dashboard")
 def get_dashboard(db: Session = Depends(get_db)) -> dict:
+    online_since = datetime.datetime.now(datetime.timezone.utc) - AGENT_ONLINE_WINDOW
     decision_counts = {
         result: count
         for result, count in db.execute(
@@ -117,7 +120,65 @@ def get_dashboard(db: Session = Depends(get_db)) -> dict:
         ),
         "identity_results": decision_counts,
         "latest_observation_at": db.scalar(select(func.max(Observation.observed_at_utc))),
+        "agents": db.scalar(select(func.count()).select_from(Agent)) or 0,
+        "agents_online": (
+            db.scalar(select(func.count()).select_from(Agent).where(
+                Agent.last_seen_at_utc >= online_since
+            )) or 0
+        ),
+        "agents_with_backlog": (
+            db.scalar(select(func.count()).select_from(Agent).where(Agent.queue_size > 0)) or 0
+        ),
     }
+
+
+def agent_summary(agent: Agent) -> dict:
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - AGENT_ONLINE_WINDOW
+    last_seen = agent.last_seen_at_utc
+    if last_seen.tzinfo is None:
+        last_seen = last_seen.replace(tzinfo=datetime.timezone.utc)
+    return {
+        "id": agent.id,
+        "computer_id": agent.computer_id,
+        "hostname": agent.hostname,
+        "domain": agent.domain,
+        "agent_version": agent.agent_version,
+        "current_ips": agent.current_ips,
+        "queue_size": agent.queue_size,
+        "selected_route": agent.selected_route,
+        "proxy_id": agent.proxy_id,
+        "source_ip": agent.source_ip,
+        "first_seen_at_utc": agent.first_seen_at_utc,
+        "last_seen_at_utc": agent.last_seen_at_utc,
+        "status": "online" if last_seen >= cutoff else "offline",
+    }
+
+
+@router.get("/agents")
+def list_agents(
+    limit: Limit = 50,
+    offset: Offset = 0,
+    hostname: str | None = None,
+    status: str | None = Query(default=None, pattern="^(online|offline)$"),
+    db: Session = Depends(get_db),
+) -> dict:
+    statement = select(Agent).order_by(desc(Agent.last_seen_at_utc), Agent.hostname)
+    if hostname:
+        statement = statement.where(Agent.hostname.ilike("%%%s%%" % hostname.strip()))
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - AGENT_ONLINE_WINDOW
+    if status == "online":
+        statement = statement.where(Agent.last_seen_at_utc >= cutoff)
+    elif status == "offline":
+        statement = statement.where(Agent.last_seen_at_utc < cutoff)
+    return page(db, statement, limit, offset, lambda row: agent_summary(row[0]))
+
+
+@router.get("/agents/{agent_id}")
+def get_agent(agent_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
+    agent = db.get(Agent, agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="agent not found")
+    return agent_summary(agent)
 
 
 @router.get("/computers")

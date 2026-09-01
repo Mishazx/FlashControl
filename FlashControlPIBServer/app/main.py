@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import datetime
 from pathlib import Path
 from typing import Any
 
@@ -13,9 +14,9 @@ from .db import engine, get_db, initialize_database
 from .auth import AUTH_PROVIDER, AuthContext, optional_auth_context, router as auth_router
 from .config import ENVIRONMENT
 from .identity import register_computer, resolve_identity
-from .models import Observation
+from .models import Agent, Computer, Observation
 from .read_api import router as read_router
-from .schemas import IngestResult, ObservationIn
+from .schemas import AgentHeartbeatIn, IngestResult, ObservationIn
 
 
 @asynccontextmanager
@@ -130,6 +131,36 @@ def health_live() -> dict[str, str]:
 def health_ready(db: Session = Depends(get_db)) -> dict[str, str]:
     db.execute(text("SELECT 1"))
     return {"status": "ok"}
+
+
+@app.post("/api/v1/agents/heartbeat", status_code=202)
+def agent_heartbeat(
+    request: Request,
+    payload: AgentHeartbeatIn,
+    db: Session = Depends(get_db),
+) -> dict:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    agent = db.get(Agent, payload.agent_id)
+    if agent is None:
+        agent = Agent(id=payload.agent_id, first_seen_at_utc=now, last_seen_at_utc=now)
+        db.add(agent)
+    computer = db.scalar(
+        select(Computer)
+        .where(Computer.hostname == payload.hostname)
+        .where(Computer.domain == payload.domain)
+    )
+    agent.computer_id = computer.id if computer else None
+    agent.hostname = payload.hostname
+    agent.domain = payload.domain
+    agent.agent_version = payload.agent_version
+    agent.current_ips = payload.current_ips
+    agent.queue_size = payload.queue_size
+    agent.selected_route = payload.selected_route
+    agent.proxy_id = payload.proxy_id
+    agent.source_ip = request.client.host if request.client else None
+    agent.last_seen_at_utc = now
+    db.commit()
+    return {"status": "accepted", "agent_id": payload.agent_id}
 
 
 @app.post("/api/v1/observations", response_model=IngestResult)

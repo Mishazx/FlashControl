@@ -16,7 +16,7 @@ from sqlalchemy import func, select
 from app.db import SessionLocal, engine
 from app.auth import create_local_user
 from app.main import app
-from app.models import Computer, IdentityDecision, MediaState, Observation, PhysicalDevice
+from app.models import Agent, Computer, IdentityDecision, MediaState, Observation, PhysicalDevice
 
 
 def observation_payload(event_id, hostname="test-host", hardware="a", media="c", state="d"):
@@ -66,6 +66,39 @@ class SqliteApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/health/live").status_code, 200)
         self.assertEqual(self.client.get("/health/ready").status_code, 200)
         self.assertEqual(self.client.get("/docs").status_code, 200)
+
+    def test_agent_heartbeat_is_upserted_and_visible(self):
+        agent_id = uuid.uuid4()
+        payload = {
+            "agent_id": str(agent_id),
+            "agent_version": "0.4.0",
+            "hostname": "heartbeat-host",
+            "domain": "CORP",
+            "current_ips": ["10.20.30.40"],
+            "queue_size": 3,
+            "selected_route": "direct",
+            "proxy_id": None,
+        }
+        first = self.client.post("/api/v1/agents/heartbeat", json=payload)
+        payload["queue_size"] = 0
+        second = self.client.post("/api/v1/agents/heartbeat", json=payload)
+        self.assertEqual(first.status_code, 202)
+        self.assertEqual(second.status_code, 202)
+
+        with SessionLocal() as session:
+            self.assertEqual(session.scalar(select(func.count()).select_from(Agent)), 1)
+            self.assertEqual(session.get(Agent, agent_id).queue_size, 0)
+
+        listing = self.client.get("/api/v1/agents", params={"status": "online"})
+        self.assertEqual(listing.status_code, 200)
+        self.assertEqual(listing.json()["total"], 1)
+        self.assertEqual(listing.json()["items"][0]["status"], "online")
+        self.assertEqual(
+            self.client.post(
+                "/api/v1/agents/heartbeat", json=dict(payload, current_ips=["bad-ip"])
+            ).status_code,
+            422,
+        )
 
     def test_web_ui_and_assets_are_served(self):
         page = self.client.get("/")

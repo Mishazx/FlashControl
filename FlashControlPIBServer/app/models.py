@@ -66,6 +66,25 @@ class Computer(Base):
     last_host: Mapped[dict] = mapped_column(json_type, nullable=False)
 
 
+class Agent(Base):
+    __tablename__ = "agents"
+
+    id: Mapped[object] = mapped_column(Uuid(as_uuid=True), primary_key=True)
+    computer_id: Mapped[object | None] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("computers.id"), index=True
+    )
+    hostname: Mapped[str] = mapped_column(String(255), nullable=False)
+    domain: Mapped[str | None] = mapped_column(String(255))
+    agent_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    current_ips: Mapped[list] = mapped_column(json_type, nullable=False)
+    queue_size: Mapped[int] = mapped_column(Integer, nullable=False)
+    selected_route: Mapped[str] = mapped_column(String(32), nullable=False)
+    proxy_id: Mapped[object | None] = mapped_column(Uuid(as_uuid=True))
+    source_ip: Mapped[str | None] = mapped_column(String(128))
+    first_seen_at_utc: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    last_seen_at_utc: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+
+
 class PhysicalDevice(Base):
     __tablename__ = "physical_devices"
 

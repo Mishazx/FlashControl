@@ -16,6 +16,7 @@ import urllib.request
 from logging.handlers import RotatingFileHandler
 
 from delivery_queue import DeliveryQueue, deliver_due
+from heartbeat import build_heartbeat, heartbeat_url, host_from_observation, load_or_create_agent_id
 
 import servicemanager
 import win32event
@@ -39,6 +40,9 @@ DEFAULT_CONFIG = {
     "retry_interval_seconds": 30,
     "retry_max_seconds": 3600,
     "delivery_batch_size": 100,
+    "heartbeat_url": "",
+    "heartbeat_interval_seconds": 60,
+    "agent_id_file": "FlashControlAgent.id",
 }
 
 
@@ -96,6 +100,13 @@ def queue_path(config):
     return os.path.join(app_dir(), filename)
 
 
+def agent_id_path(config):
+    filename = config.get("agent_id_file") or DEFAULT_CONFIG["agent_id_file"]
+    if os.path.isabs(filename):
+        return filename
+    return os.path.join(app_dir(), filename)
+
+
 def get_logger(config):
     path = log_path(config)
     folder = os.path.dirname(path)
@@ -143,6 +154,8 @@ def capture_collector_json(collector_args):
 
 
 def post_json(server_url, json_text, timeout_seconds):
+    if not isinstance(json_text, str):
+        json_text = json.dumps(json_text, ensure_ascii=False, separators=(",", ":"))
     request = urllib.request.Request(
         server_url,
         data=json_text.encode("utf-8"),
@@ -218,6 +231,10 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
             retry_interval_seconds, int(self.config.get("retry_max_seconds") or 3600)
         )
         batch_size = max(1, int(self.config.get("delivery_batch_size") or 100))
+        heartbeat_interval = max(
+            15, int(self.config.get("heartbeat_interval_seconds") or 60)
+        )
+        agent_id = load_or_create_agent_id(agent_id_path(self.config))
 
         collector_args = self.config.get("collector_args") or []
         if self.config.get("include_non_usb"):
@@ -228,6 +245,8 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
             max_items=int(self.config.get("queue_max_items") or 100000),
         )
         next_collection_at = 0
+        next_heartbeat_at = 0
+        last_host = {}
         try:
             while True:
                 now = time.time()
@@ -235,6 +254,7 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
                     try:
                         self.logger.info("collection cycle started")
                         payload = capture_collector_json(collector_args)
+                        last_host = host_from_observation(payload)
                         event_ids = queue.enqueue_json(payload)
                         self.logger.info(
                             "queued %s observation(s); queue_size=%s",
@@ -258,7 +278,29 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
                             queue.count(),
                         )
 
-                wait_seconds = min(retry_interval_seconds, max(1, next_collection_at - time.time()))
+                now = time.time()
+                target_heartbeat_url = heartbeat_url(
+                    server_url, self.config.get("heartbeat_url") or ""
+                )
+                if target_heartbeat_url and now >= next_heartbeat_at:
+                    try:
+                        import main as collector
+                        post_json(
+                            target_heartbeat_url,
+                            build_heartbeat(
+                                agent_id, collector.PROBE_VERSION, queue.count(), last_host
+                            ),
+                            timeout_seconds,
+                        )
+                    except Exception as exc:
+                        self.logger.warning("heartbeat failed: %s", exc)
+                    next_heartbeat_at = time.time() + heartbeat_interval
+
+                wait_seconds = min(
+                    retry_interval_seconds,
+                    max(1, next_collection_at - time.time()),
+                    max(1, next_heartbeat_at - time.time()) if target_heartbeat_url else retry_interval_seconds,
+                )
                 wait_result = win32event.WaitForSingleObject(
                     self.stop_event, int(wait_seconds * 1000)
                 )

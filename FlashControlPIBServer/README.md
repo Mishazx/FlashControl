@@ -132,3 +132,16 @@ provider uses another claim, set `FLASHCONTROL_OIDC_GROUP_CLAIM`. When multiple
 groups match, the strongest role wins: admin, then security, then auditor.
 Accounts without a mapping are denied; `FLASHCONTROL_OIDC_DEFAULT_ROLE` exists
 only for deployments that intentionally want a fallback role.
+
+## Agent heartbeat
+
+The Windows service keeps a stable random `agent_id` in
+`FlashControlAgent.id` and reports health to `POST /api/v1/agents/heartbeat`.
+The server records its version, current IPs, delivery queue size, selected
+route, and last-seen time. The Web UI exposes online/offline agents and queue
+backlogs. Configure `heartbeat_interval_seconds` (minimum 15 seconds); the
+default is 60 seconds and an agent is shown offline after three minutes.
+
+Heartbeat and observation ingest currently expect the deployment boundary to
+protect these endpoints. Per-agent mTLS authentication is the next transport
+security step and must be enabled before treating agent identity as trusted.

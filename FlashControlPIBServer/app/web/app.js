@@ -5,6 +5,7 @@ const titles = {
   dashboard: ["ЦЕНТР МОНИТОРИНГА", "Обзор"],
   devices: ["ИНВЕНТАРИЗАЦИЯ", "USB-устройства"],
   computers: ["ИНФРАСТРУКТУРА", "Компьютеры"],
+  agents: ["ИНФРАСТРУКТУРА", "Состояние агентов"],
   events: ["ЖУРНАЛ АУДИТА", "События"],
   alerts: ["IDENTITY ENGINE", "Коллизии и клоны"],
   audit: ["БЕЗОПАСНОСТЬ", "Журнал действий"],
@@ -92,6 +93,8 @@ async function renderDashboard() {
   const metrics = [
     ["Компьютеры", stats.computers], ["Физические устройства", stats.physical_devices],
     ["Наблюдения", stats.observations], ["Media states", stats.media_states],
+    ["Агенты онлайн", `${stats.agents_online}/${stats.agents}`],
+    ["Очередь не пуста", stats.agents_with_backlog, stats.agents_with_backlog ? "alert" : ""],
     ["Требуют внимания", stats.identity_alerts, "alert"],
   ].map(item => `<article class="metric ${item[2] || ""}"><p>${esc(item[0])}</p><strong>${item[1]}</strong></article>`).join("");
   const results = Object.entries(stats.identity_results || {});
@@ -116,6 +119,14 @@ async function renderComputers() {
   const rows = data.items.map(item => `<tr class="clickable" data-computer="${esc(item.id)}"><td><span class="primary">${esc(item.hostname)}</span><span class="secondary mono">${esc(item.id)}</span></td><td>${esc(item.domain)}</td><td>${formatDate(item.first_seen_at)}</td><td>${formatDate(item.last_seen_at)}</td></tr>`).join("");
   content.innerHTML = `<div class="toolbar"><input class="field search" id="computer-search" placeholder="Имя компьютера" value="${esc(state.filters.hostname || "")}"><button class="button" id="computer-filter">Найти</button></div>${panelTable(["Компьютер", "Домен", "Первое наблюдение", "Последнее наблюдение"], rows)}${pagination(data)}`;
   document.getElementById("computer-filter").onclick = () => { state.filters = { hostname: document.getElementById("computer-search").value.trim() }; state.offset = 0; render(); };
+  bindRows(); bindPagination();
+}
+
+async function renderAgents() {
+  const data = await api("/agents", { limit: state.limit, offset: state.offset, hostname: state.filters.hostname, status: state.filters.status });
+  const rows = data.items.map(item => `<tr class="clickable" data-agent="${esc(item.id)}"><td><span class="primary">${esc(item.hostname)}</span><span class="secondary mono">${esc(item.id)}</span></td><td><span class="badge ${item.status === "online" ? "same" : "alert"}">${esc(item.status.toUpperCase())}</span></td><td>${esc(item.agent_version)}</td><td>${item.queue_size ? `<span class="badge warning">${item.queue_size}</span>` : "0"}</td><td>${esc(item.selected_route)}</td><td>${formatDate(item.last_seen_at_utc)}</td></tr>`).join("");
+  content.innerHTML = `<div class="toolbar"><input class="field search" id="agent-search" placeholder="Имя компьютера" value="${esc(state.filters.hostname || "")}"><select class="field" id="agent-status"><option value="">Все статусы</option><option value="online" ${state.filters.status === "online" ? "selected" : ""}>online</option><option value="offline" ${state.filters.status === "offline" ? "selected" : ""}>offline</option></select><button class="button" id="agent-filter">Применить</button></div>${panelTable(["Агент", "Статус", "Версия", "Очередь", "Маршрут", "Последний heartbeat"], rows, "Агенты ещё не зарегистрированы")}${pagination(data)}`;
+  document.getElementById("agent-filter").onclick = () => { state.filters = { hostname: document.getElementById("agent-search").value.trim(), status: document.getElementById("agent-status").value }; state.offset = 0; render(); };
   bindRows(); bindPagination();
 }
 
@@ -179,6 +190,15 @@ async function openEvent(id) {
   } catch (error) { document.getElementById("drawer-body").innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
 }
 
+async function openAgent(id) {
+  openDrawer("АГЕНТ", "Загрузка…", '<div class="loading"><div class="spinner"></div></div>');
+  try {
+    const item = await api(`/agents/${id}`);
+    document.getElementById("drawer-title").textContent = item.hostname;
+    document.getElementById("drawer-body").innerHTML = `<div class="detail-grid">${detailItem("Agent ID", item.id, true, true)}${detailItem("Статус", item.status)}${detailItem("Версия", item.agent_version)}${detailItem("Домен", item.domain)}${detailItem("Размер очереди", item.queue_size)}${detailItem("Маршрут", item.selected_route)}${detailItem("Текущие IP", (item.current_ips || []).join(", "), true, true)}${detailItem("Source IP", item.source_ip, false, true)}${detailItem("Первый heartbeat", formatDate(item.first_seen_at_utc))}${detailItem("Последний heartbeat", formatDate(item.last_seen_at_utc))}</div>`;
+  } catch (error) { document.getElementById("drawer-body").innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
+}
+
 function openDrawer(eyebrow, title, body) {
   document.getElementById("drawer-eyebrow").textContent = eyebrow;
   document.getElementById("drawer-title").textContent = title;
@@ -192,6 +212,7 @@ function bindRows() {
   document.querySelectorAll("[data-device]").forEach(row => row.onclick = () => openDevice(row.dataset.device));
   document.querySelectorAll("[data-computer]").forEach(row => row.onclick = () => openComputer(row.dataset.computer));
   document.querySelectorAll("[data-event]").forEach(row => row.onclick = () => openEvent(row.dataset.event));
+  document.querySelectorAll("[data-agent]").forEach(row => row.onclick = () => openAgent(row.dataset.agent));
 }
 
 async function render() {
@@ -203,6 +224,7 @@ async function render() {
     if (state.page === "dashboard") await renderDashboard();
     if (state.page === "devices") await renderDevices();
     if (state.page === "computers") await renderComputers();
+    if (state.page === "agents") await renderAgents();
     if (state.page === "events") await renderEvents();
     if (state.page === "alerts") await renderAlerts();
     if (state.page === "audit") await renderAudit();

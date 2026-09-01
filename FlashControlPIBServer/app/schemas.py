@@ -2,7 +2,7 @@ import datetime
 import uuid
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ObservationIn(BaseModel):
@@ -34,3 +34,35 @@ class IngestResult(BaseModel):
     duplicates: int
     event_ids: list[uuid.UUID]
 
+
+class AgentHeartbeatIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: uuid.UUID
+    agent_version: str = Field(min_length=1, max_length=64)
+    hostname: str = Field(min_length=1, max_length=255)
+    domain: str | None = Field(default=None, max_length=255)
+    current_ips: list[str] = Field(default_factory=list, max_length=128)
+    queue_size: int = Field(ge=0, le=100000000)
+    selected_route: Literal["direct", "proxy", "offline"]
+    proxy_id: uuid.UUID | None = None
+
+    @field_validator("current_ips")
+    @classmethod
+    def validate_ip_addresses(cls, values: list[str]) -> list[str]:
+        import ipaddress
+
+        result = []
+        for value in values:
+            normalized = str(ipaddress.ip_address(value))
+            if normalized not in result:
+                result.append(normalized)
+        return result
+
+    @model_validator(mode="after")
+    def require_proxy_for_proxy_route(self):
+        if self.selected_route == "proxy" and self.proxy_id is None:
+            raise ValueError("proxy_id is required for proxy route")
+        if self.selected_route != "proxy" and self.proxy_id is not None:
+            raise ValueError("proxy_id is only valid for proxy route")
+        return self

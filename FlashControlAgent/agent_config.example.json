@@ -1,5 +1,8 @@
 {
-  "server_url": "https://example.local/api/flashcontrol",
+  "server_url": "https://example.local/api/v1/observations",
+  "heartbeat_url": "https://example.local/api/v1/agents/heartbeat",
+  "heartbeat_interval_seconds": 60,
+  "agent_id_file": "FlashControlAgent.id",
   "interval_seconds": 3600,
   "request_timeout_seconds": 30,
   "queue_file": "FlashControlAgent.queue.db",
