@@ -1,0 +1,31 @@
+services:
+  postgres:
+    image: postgres:17
+    environment:
+      POSTGRES_DB: flashcontrol
+      POSTGRES_USER: flashcontrol
+      POSTGRES_PASSWORD: flashcontrol
+    ports:
+      - "5432:5432"
+    volumes:
+      - flashcontrol_pgdata:/var/lib/postgresql/data
+      - ./migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flashcontrol -d flashcontrol"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    environment:
+      FLASHCONTROL_DATABASE_URL: postgresql+psycopg://flashcontrol:flashcontrol@postgres:5432/flashcontrol
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  flashcontrol_pgdata:
+

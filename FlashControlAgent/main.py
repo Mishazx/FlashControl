@@ -28,12 +28,18 @@ import platform
 import socket
 import struct
 import sys
+import time
 import uuid
+
+
+SCHEMA_VERSION = 1
+PROBE_VERSION = "0.4.0-dev"
 
 
 # ---- Константы Win32 ---------------------------------------------------------
 
 GENERIC_READ = 0x80000000
+GENERIC_WRITE = 0x40000000
 
 FILE_SHARE_READ = 0x00000001
 FILE_SHARE_WRITE = 0x00000002
@@ -41,8 +47,11 @@ OPEN_EXISTING = 3
 
 FILE_DEVICE_MASS_STORAGE = 0x0000002D
 FILE_DEVICE_DISK = 0x00000007
+FILE_DEVICE_CONTROLLER = 0x00000004
 METHOD_BUFFERED = 0
 FILE_ANY_ACCESS = 0
+FILE_READ_ACCESS = 0x0001
+FILE_WRITE_ACCESS = 0x0002
 
 StorageDeviceProperty = 0
 StorageDeviceIdProperty = 2
@@ -55,6 +64,12 @@ PARTITION_STYLE_GPT = 1
 PARTITION_STYLE_RAW = 2
 
 ERROR_MORE_DATA = 234
+ERROR_INVALID_FUNCTION = 1
+ERROR_FILE_NOT_FOUND = 2
+ERROR_PATH_NOT_FOUND = 3
+ERROR_ACCESS_DENIED = 5
+ERROR_NOT_SUPPORTED = 50
+ERROR_INVALID_PARAMETER = 87
 NERR_Success = 0
 
 
@@ -66,6 +81,12 @@ IOCTL_STORAGE_QUERY_PROPERTY = ctl_code(FILE_DEVICE_MASS_STORAGE, 0x0500)
 IOCTL_STORAGE_GET_DEVICE_NUMBER = ctl_code(FILE_DEVICE_MASS_STORAGE, 0x0420)
 IOCTL_DISK_GET_DRIVE_LAYOUT_EX = ctl_code(FILE_DEVICE_DISK, 0x0014)
 IOCTL_DISK_GET_DRIVE_GEOMETRY_EX = ctl_code(FILE_DEVICE_DISK, 0x0028)
+IOCTL_SCSI_PASS_THROUGH = ctl_code(
+    FILE_DEVICE_CONTROLLER,
+    0x0401,
+    METHOD_BUFFERED,
+    FILE_READ_ACCESS | FILE_WRITE_ACCESS,
+)
 
 
 # ---- Настройка kernel32 ------------------------------------------------------
@@ -77,6 +98,90 @@ if os.name != "nt":
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 wtsapi32 = ctypes.WinDLL("wtsapi32", use_last_error=True)
 netapi32 = ctypes.WinDLL("netapi32", use_last_error=True)
+setupapi = ctypes.WinDLL("setupapi", use_last_error=True)
+cfgmgr32 = ctypes.WinDLL("cfgmgr32", use_last_error=True)
+advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+
+
+class GUID(ctypes.Structure):
+    _fields_ = [
+        ("Data1", wintypes.DWORD),
+        ("Data2", wintypes.WORD),
+        ("Data3", wintypes.WORD),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+
+def guid_from_string(value):
+    raw = uuid.UUID(value).bytes_le
+    result = GUID()
+    result.Data1, result.Data2, result.Data3 = struct.unpack_from("<IHH", raw, 0)
+    for index in range(8):
+        result.Data4[index] = raw[8 + index]
+    return result
+
+
+GUID_DEVINTERFACE_DISK = guid_from_string("53f56307-b6bf-11d0-94f2-00a0c91efb8b")
+DIGCF_PRESENT = 0x00000002
+DIGCF_DEVICEINTERFACE = 0x00000010
+ERROR_NO_MORE_ITEMS = 259
+ERROR_NO_MORE_FILES = 18
+CR_SUCCESS = 0
+
+CM_DRP_DEVICEDESC = 0x00000001
+CM_DRP_HARDWAREID = 0x00000002
+CM_DRP_COMPATIBLEIDS = 0x00000003
+CM_DRP_SERVICE = 0x00000005
+CM_DRP_CLASS = 0x00000008
+CM_DRP_MFG = 0x0000000C
+CM_DRP_FRIENDLYNAME = 0x0000000D
+
+
+class SP_DEVICE_INTERFACE_DATA(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("InterfaceClassGuid", GUID),
+        ("Flags", wintypes.DWORD),
+        ("Reserved", ctypes.c_void_p),
+    ]
+
+
+class SP_DEVINFO_DATA(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("ClassGuid", GUID),
+        ("DevInst", wintypes.DWORD),
+        ("Reserved", ctypes.c_void_p),
+    ]
+
+
+ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else wintypes.ULONG
+
+
+class SCSI_PASS_THROUGH(ctypes.Structure):
+    _fields_ = [
+        ("Length", wintypes.WORD),
+        ("ScsiStatus", ctypes.c_ubyte),
+        ("PathId", ctypes.c_ubyte),
+        ("TargetId", ctypes.c_ubyte),
+        ("Lun", ctypes.c_ubyte),
+        ("CdbLength", ctypes.c_ubyte),
+        ("SenseInfoLength", ctypes.c_ubyte),
+        ("DataIn", ctypes.c_ubyte),
+        ("DataTransferLength", wintypes.ULONG),
+        ("TimeOutValue", wintypes.ULONG),
+        ("DataBufferOffset", ULONG_PTR),
+        ("SenseInfoOffset", wintypes.ULONG),
+        ("Cdb", ctypes.c_ubyte * 16),
+    ]
+
+
+class SCSI_PASS_THROUGH_WITH_BUFFERS(ctypes.Structure):
+    _fields_ = [
+        ("spt", SCSI_PASS_THROUGH),
+        ("sense", ctypes.c_ubyte * 32),
+        ("data", ctypes.c_ubyte * 255),
+    ]
 
 CreateFileW = kernel32.CreateFileW
 CreateFileW.argtypes = [
@@ -124,6 +229,106 @@ GetVolumeInformationW.argtypes = [
 ]
 GetVolumeInformationW.restype = wintypes.BOOL
 
+FindFirstVolumeW = kernel32.FindFirstVolumeW
+FindFirstVolumeW.argtypes = [wintypes.LPWSTR, wintypes.DWORD]
+FindFirstVolumeW.restype = wintypes.HANDLE
+
+FindNextVolumeW = kernel32.FindNextVolumeW
+FindNextVolumeW.argtypes = [wintypes.HANDLE, wintypes.LPWSTR, wintypes.DWORD]
+FindNextVolumeW.restype = wintypes.BOOL
+
+FindVolumeClose = kernel32.FindVolumeClose
+FindVolumeClose.argtypes = [wintypes.HANDLE]
+FindVolumeClose.restype = wintypes.BOOL
+
+GetVolumePathNamesForVolumeNameW = kernel32.GetVolumePathNamesForVolumeNameW
+GetVolumePathNamesForVolumeNameW.argtypes = [
+    wintypes.LPCWSTR,
+    wintypes.LPWSTR,
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD),
+]
+GetVolumePathNamesForVolumeNameW.restype = wintypes.BOOL
+
+LookupAccountNameW = advapi32.LookupAccountNameW
+LookupAccountNameW.argtypes = [
+    wintypes.LPCWSTR,
+    wintypes.LPCWSTR,
+    wintypes.LPVOID,
+    ctypes.POINTER(wintypes.DWORD),
+    wintypes.LPWSTR,
+    ctypes.POINTER(wintypes.DWORD),
+    ctypes.POINTER(wintypes.DWORD),
+]
+LookupAccountNameW.restype = wintypes.BOOL
+
+ConvertSidToStringSidW = advapi32.ConvertSidToStringSidW
+ConvertSidToStringSidW.argtypes = [wintypes.LPVOID, ctypes.POINTER(wintypes.LPWSTR)]
+ConvertSidToStringSidW.restype = wintypes.BOOL
+
+LocalFree = kernel32.LocalFree
+LocalFree.argtypes = [wintypes.HANDLE]
+LocalFree.restype = wintypes.HANDLE
+
+WTSGetActiveConsoleSessionId = getattr(kernel32, "WTSGetActiveConsoleSessionId", None)
+if WTSGetActiveConsoleSessionId is not None:
+    WTSGetActiveConsoleSessionId.argtypes = []
+    WTSGetActiveConsoleSessionId.restype = wintypes.DWORD
+
+SetupDiGetClassDevsW = setupapi.SetupDiGetClassDevsW
+SetupDiGetClassDevsW.argtypes = [
+    ctypes.POINTER(GUID), wintypes.LPCWSTR, wintypes.HWND, wintypes.DWORD,
+]
+SetupDiGetClassDevsW.restype = wintypes.HANDLE
+
+SetupDiEnumDeviceInterfaces = setupapi.SetupDiEnumDeviceInterfaces
+SetupDiEnumDeviceInterfaces.argtypes = [
+    wintypes.HANDLE,
+    ctypes.POINTER(SP_DEVINFO_DATA),
+    ctypes.POINTER(GUID),
+    wintypes.DWORD,
+    ctypes.POINTER(SP_DEVICE_INTERFACE_DATA),
+]
+SetupDiEnumDeviceInterfaces.restype = wintypes.BOOL
+
+SetupDiGetDeviceInterfaceDetailW = setupapi.SetupDiGetDeviceInterfaceDetailW
+SetupDiGetDeviceInterfaceDetailW.argtypes = [
+    wintypes.HANDLE,
+    ctypes.POINTER(SP_DEVICE_INTERFACE_DATA),
+    wintypes.LPVOID,
+    wintypes.DWORD,
+    ctypes.POINTER(wintypes.DWORD),
+    ctypes.POINTER(SP_DEVINFO_DATA),
+]
+SetupDiGetDeviceInterfaceDetailW.restype = wintypes.BOOL
+
+SetupDiDestroyDeviceInfoList = setupapi.SetupDiDestroyDeviceInfoList
+SetupDiDestroyDeviceInfoList.argtypes = [wintypes.HANDLE]
+SetupDiDestroyDeviceInfoList.restype = wintypes.BOOL
+
+CM_Get_Parent = cfgmgr32.CM_Get_Parent
+CM_Get_Parent.argtypes = [
+    ctypes.POINTER(wintypes.DWORD), wintypes.DWORD, wintypes.ULONG,
+]
+CM_Get_Parent.restype = wintypes.DWORD
+
+CM_Get_Device_IDW = cfgmgr32.CM_Get_Device_IDW
+CM_Get_Device_IDW.argtypes = [
+    wintypes.DWORD, wintypes.LPWSTR, wintypes.ULONG, wintypes.ULONG,
+]
+CM_Get_Device_IDW.restype = wintypes.DWORD
+
+CM_Get_DevNode_Registry_PropertyW = cfgmgr32.CM_Get_DevNode_Registry_PropertyW
+CM_Get_DevNode_Registry_PropertyW.argtypes = [
+    wintypes.DWORD,
+    wintypes.ULONG,
+    ctypes.POINTER(wintypes.ULONG),
+    wintypes.LPVOID,
+    ctypes.POINTER(wintypes.ULONG),
+    wintypes.ULONG,
+]
+CM_Get_DevNode_Registry_PropertyW.restype = wintypes.DWORD
+
 INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
 
@@ -162,6 +367,20 @@ WTSFreeMemory.restype = None
 WTS_CURRENT_SERVER_HANDLE = wintypes.HANDLE(0)
 WTSUserName = 5
 WTSDomainName = 7
+WTSActive = 0
+
+WTS_STATE_NAMES = {
+    0: "Active",
+    1: "Connected",
+    2: "ConnectQuery",
+    3: "Shadow",
+    4: "Disconnected",
+    5: "Idle",
+    6: "Listen",
+    7: "Reset",
+    8: "Down",
+    9: "Init",
+}
 
 
 class USER_INFO_0(ctypes.Structure):
@@ -206,8 +425,10 @@ NetSetupDomainName = 3
 # ---- Вспомогательные функции -------------------------------------------------
 
 def utc_now_iso():
-    # Не используем datetime.timezone для максимальной совместимости со старыми версиями Python.
-    return datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    # timezone доступен в Python 3.2+, поэтому этот вариант
+    # совместим с целевым Python 3.4 и не использует deprecated utcnow().
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.%fZ")
 
 
 def clean_ascii(raw):
@@ -234,14 +455,59 @@ def c_string_at_offset(buf, offset):
     return clean_ascii(buf[offset:end])
 
 
-def win_error():
+def error_status(winerror):
+    if winerror == ERROR_INVALID_FUNCTION:
+        return "unsupported"
+    if winerror in (ERROR_FILE_NOT_FOUND, ERROR_PATH_NOT_FOUND):
+        return "not_found"
+    if winerror == ERROR_ACCESS_DENIED:
+        return "access_denied"
+    if winerror == ERROR_NOT_SUPPORTED:
+        return "unsupported"
+    if winerror == ERROR_INVALID_PARAMETER:
+        return "unsupported_or_invalid"
+    return "collector_failed"
+
+
+def structured_error(collector, message, winerror=None, status=None):
+    return {
+        "collector": collector,
+        "winerror": winerror,
+        "message": message,
+        "status": status or error_status(winerror),
+    }
+
+
+def win_error(collector=None):
     err = ctypes.get_last_error()
-    if not err:
-        return "unknown Win32 error"
     try:
-        return ctypes.FormatError(err).strip()
+        message = ctypes.FormatError(err).strip() if err else "unknown Win32 error"
     except Exception:
-        return "Win32 error %d" % err
+        message = "Win32 error %d" % err
+    return structured_error(collector, message, err or None)
+
+
+def normalize_collector_error(collector, error):
+    if error is None:
+        return None
+    if isinstance(error, dict):
+        result = dict(error)
+        if not result.get("collector"):
+            result["collector"] = collector
+        return result
+    return structured_error(collector, str(error), status="invalid_data")
+
+
+def run_collector(collector, function, *args):
+    try:
+        data, error = function(*args)
+        return data, normalize_collector_error(collector, error)
+    except Exception as exc:
+        return None, structured_error(
+            collector,
+            "%s: %s" % (exc.__class__.__name__, exc),
+            status="collector_failed",
+        )
 
 
 def unique_sorted(values):
@@ -252,11 +518,6 @@ def unique_sorted(values):
             seen.add(value)
             result.append(value)
     return sorted(result)
-
-
-def stable_hash(parts):
-    normalized = "|".join("" if value is None else str(value).strip().upper() for value in parts)
-    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
 def query_wts_string(session_id, info_class):
@@ -275,6 +536,125 @@ def query_wts_string(session_id, info_class):
         return ctypes.wstring_at(buffer).strip() or None
     finally:
         WTSFreeMemory(buffer)
+
+
+def lookup_account_sid(domain, username):
+    account_name = "%s\\%s" % (domain, username) if domain else username
+    sid_size = wintypes.DWORD(0)
+    domain_size = wintypes.DWORD(0)
+    sid_use = wintypes.DWORD(0)
+
+    LookupAccountNameW(
+        None,
+        account_name,
+        None,
+        ctypes.byref(sid_size),
+        None,
+        ctypes.byref(domain_size),
+        ctypes.byref(sid_use),
+    )
+    if not sid_size.value:
+        return None, win_error("session_sid")
+
+    sid_buffer = ctypes.create_string_buffer(sid_size.value)
+    domain_buffer = ctypes.create_unicode_buffer(max(1, domain_size.value))
+    ok = LookupAccountNameW(
+        None,
+        account_name,
+        ctypes.cast(sid_buffer, wintypes.LPVOID),
+        ctypes.byref(sid_size),
+        domain_buffer,
+        ctypes.byref(domain_size),
+        ctypes.byref(sid_use),
+    )
+    if not ok:
+        return None, win_error("session_sid")
+
+    string_sid = wintypes.LPWSTR()
+    ok = ConvertSidToStringSidW(
+        ctypes.cast(sid_buffer, wintypes.LPVOID),
+        ctypes.byref(string_sid),
+    )
+    if not ok:
+        return None, win_error("session_sid")
+    try:
+        return string_sid.value, None
+    finally:
+        LocalFree(string_sid)
+
+
+def enumerate_user_sessions():
+    sessions = ctypes.POINTER(WTS_SESSION_INFO)()
+    count = wintypes.DWORD(0)
+    result = []
+    ok = WTSEnumerateSessionsW(
+        WTS_CURRENT_SERVER_HANDLE,
+        0,
+        1,
+        ctypes.byref(sessions),
+        ctypes.byref(count),
+    )
+    if not ok:
+        return None, win_error("session_enumerator")
+
+    try:
+        for index in range(count.value):
+            item = sessions[index]
+            username = query_wts_string(item.SessionId, WTSUserName)
+            if not username:
+                continue
+            domain = query_wts_string(item.SessionId, WTSDomainName)
+            result.append({
+                "session_id": item.SessionId,
+                "username": username,
+                "domain": domain,
+                "state": WTS_STATE_NAMES.get(item.State, "Unknown"),
+                "state_code": item.State,
+                "station_name": item.pWinStationName or None,
+            })
+    finally:
+        WTSFreeMemory(sessions)
+    return result, None
+
+
+def collect_active_session():
+    sessions, sessions_error = run_collector(
+        "session_enumerator",
+        enumerate_user_sessions,
+    )
+    if not sessions:
+        return {
+            "session_id": None,
+            "username": None,
+            "domain": None,
+            "sid": None,
+            "state": None,
+            "errors": {"enumeration": sessions_error, "sid": None},
+        }
+
+    console_session_id = 0xFFFFFFFF
+    if WTSGetActiveConsoleSessionId is not None:
+        console_session_id = WTSGetActiveConsoleSessionId()
+
+    selected = None
+    for session in sessions:
+        if session["session_id"] == console_session_id and session["state_code"] == WTSActive:
+            selected = session
+            break
+    if selected is None:
+        for session in sessions:
+            if session["state_code"] == WTSActive:
+                selected = session
+                break
+    if selected is None:
+        selected = sessions[0]
+
+    sid, sid_error = lookup_account_sid(selected["domain"], selected["username"])
+    result = dict(selected)
+    result.pop("state_code", None)
+    result["sid"] = sid
+    result["errors"] = {"enumeration": sessions_error, "sid": sid_error}
+    return result
 
 
 def enumerate_logged_in_users():
@@ -329,6 +709,9 @@ def enumerate_local_users():
         )
 
         if status not in (NERR_Success, ERROR_MORE_DATA):
+            if buffer:
+                NetApiBufferFree(buffer)
+                buffer = wintypes.LPVOID()
             break
 
         if buffer and entries_read.value:
@@ -361,21 +744,6 @@ def enumerate_ip_addresses():
                 addresses.append(sockaddr[0].split("%", 1)[0])
     except Exception:
         pass
-
-    for target in ("1.1.1.1", "8.8.8.8"):
-        s = None
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect((target, 80))
-            addresses.append(s.getsockname()[0])
-        except Exception:
-            pass
-        finally:
-            if s is not None:
-                try:
-                    s.close()
-                except Exception:
-                    pass
 
     return unique_sorted(addresses)
 
@@ -445,6 +813,209 @@ def open_volume_letter(letter):
     if handle == INVALID_HANDLE_VALUE:
         return None, path, win_error()
     return handle, path, None
+
+
+def open_disk_for_scsi(number):
+    path = r"\\.\PhysicalDrive%d" % number
+    handle = CreateFileW(
+        path,
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        None,
+        OPEN_EXISTING,
+        0,
+        None,
+    )
+    if handle == INVALID_HANDLE_VALUE:
+        return None, path, win_error("vpd80")
+    return handle, path, None
+
+
+def open_device_path(path):
+    handle = CreateFileW(
+        path,
+        0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        None,
+        OPEN_EXISTING,
+        0,
+        None,
+    )
+    if handle == INVALID_HANDLE_VALUE:
+        return None, win_error("setupapi_disk_open")
+    return handle, None
+
+
+def cm_device_id(devinst):
+    buffer = ctypes.create_unicode_buffer(4096)
+    result = CM_Get_Device_IDW(devinst, buffer, len(buffer), 0)
+    if result != CR_SUCCESS:
+        return None
+    return buffer.value or None
+
+
+def decode_registry_strings(raw):
+    if not raw:
+        return []
+    text = raw.decode("utf-16-le", "replace").rstrip("\x00")
+    return [value for value in text.split("\x00") if value]
+
+
+def cm_registry_property(devinst, property_code, multiple=False):
+    buffer = ctypes.create_string_buffer(65536)
+    size = wintypes.ULONG(len(buffer))
+    data_type = wintypes.ULONG(0)
+    result = CM_Get_DevNode_Registry_PropertyW(
+        devinst,
+        property_code,
+        ctypes.byref(data_type),
+        ctypes.cast(buffer, wintypes.LPVOID),
+        ctypes.byref(size),
+        0,
+    )
+    if result != CR_SUCCESS:
+        return [] if multiple else None
+    values = decode_registry_strings(buffer.raw[:size.value])
+    if multiple:
+        return values
+    return values[0] if values else None
+
+
+def pnp_node(devinst):
+    return {
+        "device_instance_id": cm_device_id(devinst),
+        "hardware_ids": cm_registry_property(devinst, CM_DRP_HARDWAREID, True),
+        "compatible_ids": cm_registry_property(devinst, CM_DRP_COMPATIBLEIDS, True),
+        "manufacturer": cm_registry_property(devinst, CM_DRP_MFG),
+        "friendly_name": cm_registry_property(devinst, CM_DRP_FRIENDLYNAME),
+        "service": cm_registry_property(devinst, CM_DRP_SERVICE),
+        "class": cm_registry_property(devinst, CM_DRP_CLASS),
+    }
+
+
+def pnp_parent_chain(devinst, max_depth=8):
+    nodes = []
+    current = devinst
+    for _ in range(max_depth):
+        node = pnp_node(current)
+        node["depth"] = len(nodes)
+        nodes.append(node)
+        parent = wintypes.DWORD(0)
+        if CM_Get_Parent(ctypes.byref(parent), current, 0) != CR_SUCCESS:
+            break
+        current = parent.value
+    return nodes
+
+
+def usb_evidence_from_chain(nodes):
+    for node in nodes:
+        instance_id = node.get("device_instance_id") or ""
+        upper = instance_id.upper()
+        if not upper.startswith("USB\\"):
+            continue
+        vid = None
+        pid = None
+        for part in upper.split("\\", 1)[0:1] + upper.split("\\")[1:2]:
+            for token in part.split("&"):
+                if token.startswith("VID_"):
+                    vid = token[4:]
+                elif token.startswith("PID_"):
+                    pid = token[4:]
+        serial_candidate = instance_id.rsplit("\\", 1)[-1] if "\\" in instance_id else None
+        likely_port_specific = bool(serial_candidate and "&" in serial_candidate)
+        return {
+            "device_instance_id": instance_id,
+            "vid": vid,
+            "pid": pid,
+            "serial_candidate": {
+                "value": serial_candidate,
+                "source": "pnp_usb_instance_id",
+                "likely_port_specific": likely_port_specific,
+            } if serial_candidate else None,
+        }
+    return None
+
+
+def enumerate_setupapi_disks():
+    by_number = {}
+    info_set = SetupDiGetClassDevsW(
+        ctypes.byref(GUID_DEVINTERFACE_DISK),
+        None,
+        None,
+        DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
+    )
+    if info_set == INVALID_HANDLE_VALUE:
+        return None, win_error("setupapi_enumerator")
+
+    try:
+        index = 0
+        while True:
+            interface = SP_DEVICE_INTERFACE_DATA()
+            interface.cbSize = ctypes.sizeof(SP_DEVICE_INTERFACE_DATA)
+            ok = SetupDiEnumDeviceInterfaces(
+                info_set,
+                None,
+                ctypes.byref(GUID_DEVINTERFACE_DISK),
+                index,
+                ctypes.byref(interface),
+            )
+            if not ok:
+                error = ctypes.get_last_error()
+                if error == ERROR_NO_MORE_ITEMS:
+                    break
+                return None, win_error("setupapi_enumerator")
+
+            required = wintypes.DWORD(0)
+            devinfo = SP_DEVINFO_DATA()
+            devinfo.cbSize = ctypes.sizeof(SP_DEVINFO_DATA)
+            SetupDiGetDeviceInterfaceDetailW(
+                info_set,
+                ctypes.byref(interface),
+                None,
+                0,
+                ctypes.byref(required),
+                ctypes.byref(devinfo),
+            )
+            if not required.value:
+                index += 1
+                continue
+
+            detail = ctypes.create_string_buffer(required.value)
+            ctypes.cast(detail, ctypes.POINTER(wintypes.DWORD)).contents.value = (
+                8 if ctypes.sizeof(ctypes.c_void_p) == 8 else 6
+            )
+            ok = SetupDiGetDeviceInterfaceDetailW(
+                info_set,
+                ctypes.byref(interface),
+                ctypes.cast(detail, wintypes.LPVOID),
+                required.value,
+                ctypes.byref(required),
+                ctypes.byref(devinfo),
+            )
+            if not ok:
+                index += 1
+                continue
+
+            device_path = ctypes.wstring_at(ctypes.addressof(detail) + 4)
+            handle, _ = open_device_path(device_path)
+            if handle is not None:
+                try:
+                    device_number, _ = query_storage_device_number(handle)
+                finally:
+                    CloseHandle(handle)
+                if device_number is not None:
+                    chain = pnp_parent_chain(devinfo.DevInst)
+                    by_number[device_number["device_number"]] = {
+                        "device_interface_path": device_path,
+                        "disk_instance_id": chain[0].get("device_instance_id") if chain else None,
+                        "nodes": chain,
+                        "usb": usb_evidence_from_chain(chain),
+                    }
+            index += 1
+    finally:
+        SetupDiDestroyDeviceInfoList(info_set)
+
+    return by_number, None
 
 
 def ioctl(handle, code, in_bytes=None, out_size=4096):
@@ -574,39 +1145,203 @@ def query_volume_information(root):
     }, None
 
 
+def volume_mount_paths(volume_guid):
+    size = 1024
+    while True:
+        buffer = ctypes.create_unicode_buffer(size)
+        required = wintypes.DWORD(0)
+        ok = GetVolumePathNamesForVolumeNameW(
+            volume_guid,
+            buffer,
+            size,
+            ctypes.byref(required),
+        )
+        if ok:
+            text = "".join(buffer[:required.value])
+            return [value for value in text.split("\x00") if value], None
+        error = ctypes.get_last_error()
+        if error == ERROR_MORE_DATA and required.value > size:
+            size = required.value
+            continue
+        return [], win_error("volume_mount_paths")
+
+
+def open_volume_guid(volume_guid):
+    # CreateFile expects the volume GUID path without its trailing backslash.
+    path = volume_guid[:-1] if volume_guid.endswith("\\") else volume_guid
+    handle = CreateFileW(
+        path,
+        0,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        None,
+        OPEN_EXISTING,
+        0,
+        None,
+    )
+    if handle == INVALID_HANDLE_VALUE:
+        return None, win_error("volume_open")
+    return handle, None
+
+
 def enumerate_volumes_by_physical_drive():
     result = {}
-    mask = GetLogicalDrives()
+    name_buffer = ctypes.create_unicode_buffer(1024)
+    search_handle = FindFirstVolumeW(name_buffer, len(name_buffer))
+    if search_handle == INVALID_HANDLE_VALUE:
+        raise RuntimeError(win_error("volume_enumerator"))
 
-    for i in range(26):
-        if not (mask & (1 << i)):
-            continue
+    try:
+        while True:
+            volume_guid = name_buffer.value
+            mount_paths, mount_error = volume_mount_paths(volume_guid)
+            drive_letters = unique_sorted([
+                path[:2]
+                for path in mount_paths
+                if len(path) >= 3 and path[1:3] == ":\\"
+            ])
 
-        letter = chr(ord("A") + i)
-        handle, _, _ = open_volume_letter(letter)
-        if handle is None:
-            continue
+            handle, open_error = open_volume_guid(volume_guid)
+            device_number = None
+            device_number_error = None
+            if handle is not None:
+                try:
+                    device_number, device_number_error = run_collector(
+                        "volume_device_number",
+                        query_storage_device_number,
+                        handle,
+                    )
+                finally:
+                    CloseHandle(handle)
 
-        try:
-            devnum, _ = query_storage_device_number(handle)
-        finally:
-            CloseHandle(handle)
+            volume, volume_error = run_collector(
+                "volume_information",
+                query_volume_information,
+                volume_guid,
+            )
 
-        if devnum is None:
-            continue
+            if device_number is not None:
+                item = {
+                    "volume_guid": volume_guid,
+                    "drive_letters": drive_letters,
+                    "mount_paths": mount_paths,
+                    "partition_number": device_number["partition_number"],
+                    "filesystem": volume.get("filesystem") if volume else None,
+                    "volume_label": volume.get("label") if volume else None,
+                    "volume_serial": volume.get("volume_serial") if volume else None,
+                    "errors": {
+                        "mount_paths": mount_error,
+                        "open": open_error,
+                        "device_number": device_number_error,
+                        "volume_information": volume_error,
+                    },
+                }
+                result.setdefault(device_number["device_number"], []).append(item)
 
-        root = "%s:\\" % letter
-        vol, vol_err = query_volume_information(root)
-
-        item = {
-            "drive_letter": "%s:" % letter,
-            "partition_number": devnum["partition_number"],
-            "volume": vol,
-            "error": vol_err,
-        }
-        result.setdefault(devnum["device_number"], []).append(item)
+            ok = FindNextVolumeW(search_handle, name_buffer, len(name_buffer))
+            if ok:
+                continue
+            error = ctypes.get_last_error()
+            if error == ERROR_NO_MORE_FILES:
+                break
+            raise RuntimeError(win_error("volume_enumerator"))
+    finally:
+        FindVolumeClose(search_handle)
 
     return result
+
+
+def query_vpd80_serial(physical_drive_number):
+    handle, _, open_error = open_disk_for_scsi(physical_drive_number)
+    if handle is None:
+        return None, open_error
+
+    try:
+        request = SCSI_PASS_THROUGH_WITH_BUFFERS()
+        request.spt.Length = ctypes.sizeof(SCSI_PASS_THROUGH)
+        request.spt.CdbLength = 6
+        request.spt.SenseInfoLength = len(request.sense)
+        request.spt.DataIn = 1  # SCSI_IOCTL_DATA_IN
+        request.spt.DataTransferLength = len(request.data)
+        request.spt.TimeOutValue = 5
+        request.spt.DataBufferOffset = SCSI_PASS_THROUGH_WITH_BUFFERS.data.offset
+        request.spt.SenseInfoOffset = SCSI_PASS_THROUGH_WITH_BUFFERS.sense.offset
+        request.spt.Cdb[0] = 0x12  # INQUIRY
+        request.spt.Cdb[1] = 0x01  # EVPD
+        request.spt.Cdb[2] = 0x80  # Unit Serial Number VPD page
+        request.spt.Cdb[4] = len(request.data)
+
+        request_bytes = ctypes.string_at(ctypes.byref(request), ctypes.sizeof(request))
+        response_bytes, ioctl_error = ioctl(
+            handle,
+            IOCTL_SCSI_PASS_THROUGH,
+            request_bytes,
+            ctypes.sizeof(request),
+        )
+        if response_bytes is None:
+            return None, normalize_collector_error("vpd80", ioctl_error)
+        if len(response_bytes) < SCSI_PASS_THROUGH_WITH_BUFFERS.data.offset + 4:
+            return None, structured_error(
+                "vpd80",
+                "short SCSI pass-through response (%d bytes)" % len(response_bytes),
+                status="invalid_data",
+            )
+
+        response = SCSI_PASS_THROUGH_WITH_BUFFERS.from_buffer_copy(
+            response_bytes.ljust(ctypes.sizeof(request), b"\x00")
+        )
+        if response.spt.ScsiStatus != 0:
+            sense_bytes = bytes(bytearray(response.sense))
+            return None, {
+                "collector": "vpd80",
+                "winerror": None,
+                "message": "SCSI INQUIRY returned status 0x%02X" % response.spt.ScsiStatus,
+                "status": "unsupported_or_invalid",
+                "scsi_status": response.spt.ScsiStatus,
+                "sense_hex": sense_bytes.hex() if hasattr(sense_bytes, "hex") else "".join(
+                    "%02x" % value for value in bytearray(sense_bytes)
+                ),
+            }
+
+        data_offset = SCSI_PASS_THROUGH_WITH_BUFFERS.data.offset
+        available = min(len(response_bytes) - data_offset, len(response.data))
+        page = response_bytes[data_offset:data_offset + available]
+        if len(page) < 4:
+            return None, structured_error(
+                "vpd80",
+                "short VPD80 page (%d bytes)" % len(page),
+                status="invalid_data",
+            )
+        if page[1] != 0x80:
+            return None, structured_error(
+                "vpd80",
+                "unexpected VPD page 0x%02X" % page[1],
+                status="unsupported_or_invalid",
+            )
+
+        page_length = struct.unpack_from(">H", page, 2)[0]
+        if page_length > len(page) - 4:
+            return None, structured_error(
+                "vpd80",
+                "VPD80 page length %d exceeds returned data %d"
+                % (page_length, len(page) - 4),
+                status="invalid_data",
+            )
+        raw_serial = page[4:4 + page_length]
+        serial = clean_ascii(raw_serial)
+        if not serial:
+            return None, structured_error(
+                "vpd80",
+                "VPD80 returned an empty serial",
+                status="missing",
+            )
+        return {
+            "supported": True,
+            "serial": serial,
+            "page_length": page_length,
+            "source": "scsi_inquiry_evpd_0x80",
+        }, None
+    finally:
+        CloseHandle(handle)
 
 
 def query_vpd83_identifiers(handle):
@@ -709,6 +1444,7 @@ def query_drive_layout(handle):
     result = {
         "partition_style": style,
         "partition_count": partition_count,
+        "partitions": [],
     }
 
     if style == PARTITION_STYLE_MBR:
@@ -741,77 +1477,268 @@ def query_drive_layout(handle):
     else:
         result["partition_style_name"] = "UNKNOWN"
 
+    # DRIVE_LAYOUT_INFORMATION_EX contains a 40-byte MBR/GPT union after its
+    # 8-byte header. PARTITION_INFORMATION_EX entries therefore start at 48.
+    # Each entry is 144 bytes with the normal Windows packing used by winioctl.h.
+    entry_offset = 48
+    entry_size = 144
+    required_size = entry_offset + (partition_count * entry_size)
+    if partition_count > 1024:
+        return None, "unreasonable partition count (%d)" % partition_count
+    if partition_count and len(data) < required_size:
+        return None, (
+            "short DRIVE_LAYOUT_INFORMATION_EX for %d entries (%d of %d bytes)"
+            % (partition_count, len(data), required_size)
+        )
+
+    for index in range(partition_count):
+        offset = entry_offset + (index * entry_size)
+        entry_style = struct.unpack_from("<I", data, offset)[0]
+        starting_offset = struct.unpack_from("<q", data, offset + 8)[0]
+        partition_length = struct.unpack_from("<q", data, offset + 16)[0]
+        partition_number = struct.unpack_from("<I", data, offset + 24)[0]
+        rewrite_partition = bool(data[offset + 28])
+        service_partition = bool(data[offset + 29])
+
+        entry = {
+            "entry_index": index,
+            "partition_style": entry_style,
+            "number": partition_number,
+            "offset": starting_offset,
+            "length": partition_length,
+            "rewrite_partition": rewrite_partition,
+            "service_partition": service_partition,
+        }
+
+        if entry_style == PARTITION_STYLE_MBR:
+            partition_type = data[offset + 32]
+            partition_id_bytes = data[offset + 40:offset + 56]
+            entry.update({
+                "partition_style_name": "MBR",
+                "mbr_type": partition_type,
+                "boot_indicator": bool(data[offset + 33]),
+                "recognized_partition": bool(data[offset + 34]),
+                "hidden_sectors": struct.unpack_from("<I", data, offset + 36)[0],
+                "partition_id": str(uuid.UUID(bytes_le=partition_id_bytes)),
+                "is_unused": partition_type == 0,
+            })
+        elif entry_style == PARTITION_STYLE_GPT:
+            partition_type_bytes = data[offset + 32:offset + 48]
+            partition_id_bytes = data[offset + 48:offset + 64]
+            name_bytes = data[offset + 72:offset + 144]
+            name = name_bytes.decode("utf-16-le", "replace").split("\x00", 1)[0]
+            partition_type_guid = str(uuid.UUID(bytes_le=partition_type_bytes))
+            entry.update({
+                "partition_style_name": "GPT",
+                "partition_type_guid": partition_type_guid,
+                "partition_guid": str(uuid.UUID(bytes_le=partition_id_bytes)),
+                "attributes": struct.unpack_from("<Q", data, offset + 64)[0],
+                "name": name or None,
+                "is_unused": partition_type_guid == "00000000-0000-0000-0000-000000000000",
+            })
+        elif entry_style == PARTITION_STYLE_RAW:
+            entry["partition_style_name"] = "RAW"
+            entry["is_unused"] = partition_length == 0
+        else:
+            entry["partition_style_name"] = "UNKNOWN"
+            entry["is_unused"] = partition_length == 0
+
+        result["partitions"].append(entry)
+
     return result, None
 
 
-def hardware_evidence_hash(record):
+def canonical_sha256(value):
+    payload = json.dumps(
+        value,
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def hardware_evidence(record):
     storage = record.get("storage") or {}
     geometry = record.get("geometry") or {}
     vpd83 = record.get("vpd83") or []
+    vpd80 = record.get("vpd80") or {}
+    pnp = record.get("pnp") or {}
+    usb = pnp.get("usb") or {}
+    serial_candidate = usb.get("serial_candidate") or {}
 
-    parts = [
-        storage.get("vendor"),
-        storage.get("product"),
-        storage.get("revision"),
-        storage.get("serial"),
-        storage.get("bus_type"),
-        geometry.get("size_bytes"),
-        geometry.get("bytes_per_sector"),
-    ]
+    nodes = pnp.get("nodes") or []
+    device_nodes = []
+    # Only the disk and actual USB device nodes are hardware evidence. Parents
+    # above them identify the host controller and port.
+    for node in nodes[:2]:
+        device_nodes.append({
+            "hardware_ids": sorted(node.get("hardware_ids") or []),
+            "compatible_ids": sorted(node.get("compatible_ids") or []),
+            "service": node.get("service"),
+            "class": node.get("class"),
+        })
 
+    normalized_vpd83 = []
     for item in vpd83:
-        parts.append(item.get("value_hex"))
+        normalized_vpd83.append({
+            "code_set": item.get("code_set"),
+            "type": item.get("type"),
+            "association": item.get("association"),
+            "value_hex": item.get("value_hex"),
+        })
+    normalized_vpd83.sort(key=lambda item: (
+        item.get("association") if item.get("association") is not None else -1,
+        item.get("type") if item.get("type") is not None else -1,
+        item.get("code_set") if item.get("code_set") is not None else -1,
+        item.get("value_hex") or "",
+    ))
 
-    return stable_hash(parts)
+    return {
+        "usb": {
+            "vid": usb.get("vid"),
+            "pid": usb.get("pid"),
+            "serial_candidate": (
+            serial_candidate.get("value")
+            if not serial_candidate.get("likely_port_specific")
+            else None
+            ),
+        },
+        "storage": {
+            "vendor": storage.get("vendor"),
+            "product": storage.get("product"),
+            "revision": storage.get("revision"),
+            "serial": storage.get("serial"),
+            "bus_type": storage.get("bus_type"),
+            "removable_media": storage.get("removable_media"),
+        },
+        "geometry": {
+            "size_bytes": geometry.get("size_bytes"),
+            "bytes_per_sector": geometry.get("bytes_per_sector"),
+        },
+        "pnp_device_nodes": device_nodes,
+        "vpd80": {
+            "serial": vpd80.get("serial"),
+        },
+        "vpd83": normalized_vpd83,
+    }
+
+
+def hardware_evidence_hash(record):
+    return canonical_sha256(hardware_evidence(record))
+
+
+def media_evidence(record):
+    layout = record.get("layout") or {}
+    volumes = record.get("volumes") or []
+    partitions = layout.get("partitions") or []
+
+    normalized_partitions = []
+
+    for partition in sorted(
+        partitions,
+        key=lambda x: (
+            x.get("number") if x.get("number") is not None else -1,
+            x.get("offset") if x.get("offset") is not None else -1,
+            x.get("entry_index") if x.get("entry_index") is not None else -1,
+        ),
+    ):
+        normalized_partitions.append({
+            "style": partition.get("partition_style_name"),
+            "number": partition.get("number"),
+            "offset": partition.get("offset"),
+            "length": partition.get("length"),
+            "mbr_type": partition.get("mbr_type"),
+            "boot_indicator": partition.get("boot_indicator"),
+            "recognized_partition": partition.get("recognized_partition"),
+            "hidden_sectors": partition.get("hidden_sectors"),
+            "partition_type_guid": partition.get("partition_type_guid"),
+            "partition_guid": partition.get("partition_guid"),
+            "attributes": partition.get("attributes"),
+            "name": partition.get("name"),
+            "is_unused": partition.get("is_unused"),
+        })
+
+    normalized_volumes = []
+    for item in sorted(
+        volumes,
+        key=lambda x: (
+            x.get("partition_number") if x.get("partition_number") is not None else -1,
+        ),
+    ):
+        normalized_volumes.append({
+            "partition_number": item.get("partition_number"),
+            "filesystem": item.get("filesystem"),
+            "volume_serial": item.get("volume_serial"),
+            "volume_label": item.get("volume_label"),
+        })
+
+    return {
+        "disk": {
+            "partition_style": layout.get("partition_style_name"),
+            "mbr_signature": layout.get("mbr_signature"),
+            "gpt_disk_guid": layout.get("gpt_disk_guid"),
+        },
+        "partitions": normalized_partitions,
+        "volumes": normalized_volumes,
+    }
 
 
 def media_evidence_hash(record):
-    layout = record.get("layout") or {}
-    volumes = record.get("volumes") or []
-
-    parts = [
-        layout.get("partition_style_name"),
-        layout.get("mbr_signature"),
-        layout.get("gpt_disk_guid"),
-        layout.get("partition_count"),
-    ]
-
-    for item in sorted(volumes, key=lambda x: x.get("drive_letter") or ""):
-        volume = item.get("volume") or {}
-        parts.extend([
-            item.get("partition_number"),
-            volume.get("filesystem"),
-            volume.get("volume_serial"),
-            volume.get("label"),
-        ])
-
-    return stable_hash(parts)
+    return canonical_sha256(media_evidence(record))
 
 
-def candidate_evidence_hash(record):
-    return stable_hash([
-        hardware_evidence_hash(record),
-        media_evidence_hash(record),
-    ])
+def observation_hash(hardware_hash, media_hash):
+    return canonical_sha256({
+        "hardware_evidence_sha256": hardware_hash,
+        "media_evidence_sha256": media_hash,
+    })
 
 
-def scan_physical_disks(max_disks=64, include_non_usb=False):
+def scan_physical_disks(max_disks=64, include_non_usb=False, enable_vpd80=False):
     devices = []
     errors = []
-    volumes_by_disk = enumerate_volumes_by_physical_drive()
+    pnp_by_disk, pnp_collector_error = run_collector(
+        "setupapi_enumerator",
+        enumerate_setupapi_disks,
+    )
+    if pnp_by_disk is None:
+        pnp_by_disk = {}
+    if pnp_collector_error is not None:
+        errors.append(pnp_collector_error)
+    volume_collector_error = None
+    try:
+        volumes_by_disk = enumerate_volumes_by_physical_drive()
+    except Exception as exc:
+        volumes_by_disk = {}
+        volume_collector_error = structured_error(
+            "volume_enumerator",
+            "%s: %s" % (exc.__class__.__name__, exc),
+            status="collector_failed",
+        )
+        errors.append(volume_collector_error)
 
     for number in range(max_disks):
         handle, path, open_err = open_disk(number)
         if handle is None:
-            # ERROR_FILE_NOT_FOUND и некорректные номера дисков здесь ожидаемы.
+            # Отсутствующие номера дисков здесь ожидаемы. Остальные
+            # ошибки, включая access denied, не должны пропадать.
+            open_err = normalize_collector_error("disk_open", open_err)
+            if open_err.get("status") != "not_found":
+                open_err["physical_drive"] = number
+                open_err["path"] = path
+                errors.append(open_err)
             continue
 
         try:
-            storage, storage_err = query_storage_descriptor(handle)
+            storage, storage_err = run_collector(
+                "storage_descriptor",
+                query_storage_descriptor,
+                handle,
+            )
             if storage is None:
                 errors.append({
                     "physical_drive": number,
-                    "stage": "storage_descriptor",
                     "error": storage_err,
                 })
                 continue
@@ -819,9 +1746,19 @@ def scan_physical_disks(max_disks=64, include_non_usb=False):
             if storage.get("bus_type") != BusTypeUsb and not include_non_usb:
                 continue
 
-            geometry, geometry_err = query_geometry(handle)
-            layout, layout_err = query_drive_layout(handle)
-            vpd83, vpd_err = query_vpd83_identifiers(handle)
+            geometry, geometry_err = run_collector("geometry", query_geometry, handle)
+            layout, layout_err = run_collector("drive_layout", query_drive_layout, handle)
+            if enable_vpd80:
+                vpd80, vpd80_err = run_collector(
+                    "vpd80",
+                    query_vpd80_serial,
+                    number,
+                )
+            else:
+                vpd80, vpd80_err = None, None
+            vpd83, vpd_err = run_collector("vpd83", query_vpd83_identifiers, handle)
+            if vpd83 is None:
+                vpd83 = []
 
             record = {
                 "physical_drive": number,
@@ -830,24 +1767,53 @@ def scan_physical_disks(max_disks=64, include_non_usb=False):
                 "geometry": geometry,
                 "layout": layout,
                 "volumes": volumes_by_disk.get(number, []),
+                "vpd80": vpd80,
                 "vpd83": vpd83,
+                "pnp": pnp_by_disk.get(number),
                 "capabilities": {
                     "storage_descriptor": storage is not None,
                     "geometry": geometry is not None,
-                    "drive_layout": layout is not None,
-                    "volume_information": bool(volumes_by_disk.get(number, [])),
+                    "partition_layout": layout is not None,
+                    "volume_information": volume_collector_error is None,
+                    "vpd80": enable_vpd80 and vpd80_err is None,
                     "vpd83": vpd_err is None,
+                    "pnp_tree": pnp_collector_error is None,
+                },
+                "capability_status": {
+                    "storage_descriptor": "available",
+                    "geometry": "available" if geometry_err is None else geometry_err["status"],
+                    "partition_layout": "available" if layout_err is None else layout_err["status"],
+                    "volume_information": (
+                        "available" if volumes_by_disk.get(number, [])
+                        else "no_volumes" if volume_collector_error is None
+                        else volume_collector_error["status"]
+                    ),
+                    "vpd80": (
+                        "disabled" if not enable_vpd80
+                        else "available" if vpd80_err is None
+                        else vpd80_err["status"]
+                    ),
+                    "vpd83": "available" if vpd_err is None else vpd_err["status"],
+                    "pnp_tree": (
+                        "available" if pnp_by_disk.get(number) is not None
+                        else "not_found" if pnp_collector_error is None
+                        else pnp_collector_error["status"]
+                    ),
                 },
                 "collector_errors": {
                     "geometry": geometry_err,
-                    "drive_layout": layout_err,
+                    "partition_layout": layout_err,
+                    "vpd80": vpd80_err,
                     "vpd83": vpd_err,
                 },
             }
 
-            record["hardware_evidence_sha256"] = hardware_evidence_hash(record)
-            record["media_evidence_sha256"] = media_evidence_hash(record)
-            record["candidate_evidence_sha256"] = candidate_evidence_hash(record)
+            hardware_hash = hardware_evidence_hash(record)
+            media_hash = media_evidence_hash(record)
+            record["fingerprint_version"] = 1
+            record["hardware_evidence_sha256"] = hardware_hash
+            record["media_evidence_sha256"] = media_hash
+            record["observation_sha256"] = observation_hash(hardware_hash, media_hash)
             devices.append(record)
 
         finally:
@@ -856,10 +1822,10 @@ def scan_physical_disks(max_disks=64, include_non_usb=False):
     return devices, errors
 
 
-def host_info():
+def host_info(include_diagnostics=False):
     win32 = platform.win32_ver()
     join_info = query_domain_membership()
-    return {
+    result = {
         "hostname": socket.gethostname(),
         "computer_name": socket.gethostname(),
         "platform": platform.platform(),
@@ -873,36 +1839,269 @@ def host_info():
         "workgroup_name": join_info["workgroup_name"],
         "join_status": join_info["join_status"],
         "ip_addresses": enumerate_ip_addresses(),
-        "logged_in_users": enumerate_logged_in_users(),
-        "local_users": enumerate_local_users(),
     }
+    if include_diagnostics:
+        result["local_users"] = enumerate_local_users()
+    return result
+
+
+def summarize_capabilities(devices):
+    names = (
+        "storage_descriptor",
+        "geometry",
+        "partition_layout",
+        "volume_information",
+        "pnp_tree",
+        "vpd80",
+        "vpd83",
+    )
+    summary = {}
+    for name in names:
+        summary[name] = any(
+            bool((device.get("capabilities") or {}).get(name))
+            for device in devices
+        )
+    return summary
+
+
+def collector_error_list(error_map):
+    result = []
+    for name in sorted(error_map):
+        error = error_map.get(name)
+        if error is None:
+            continue
+        normalized = normalize_collector_error(name, error)
+        result.append(normalized)
+    return result
+
+
+def build_observation(device_record, host, session, observed_at_utc, event_type="snapshot"):
+    device = dict(device_record)
+    capabilities = device.pop("capabilities", {})
+    capability_status = device.pop("capability_status", {})
+    collector_errors = collector_error_list(device.pop("collector_errors", {}))
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "probe_version": PROBE_VERSION,
+        "event_id": str(uuid.uuid4()),
+        "event_type": event_type,
+        "observed_at_utc": observed_at_utc,
+        "host": host,
+        "session": session,
+        "device": device,
+        "capabilities": capabilities,
+        "capability_status": capability_status,
+        "collector_errors": collector_errors,
+    }
+
+
+def write_json_stdout(value, compact=False):
+    options = {
+        "ensure_ascii": False,
+        "sort_keys": True,
+    }
+    if compact:
+        options["separators"] = (",", ":")
+    else:
+        options["indent"] = 2
+    text = json.dumps(value, **options)
+    binary_stdout = getattr(sys.stdout, "buffer", None)
+    if binary_stdout is not None:
+        binary_stdout.write(text.encode("utf-8"))
+        binary_stdout.write(b"\n")
+        binary_stdout.flush()
+        return
+    # Windows Service captures stdout with io.StringIO, which has no buffer.
+    sys.stdout.write(text)
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+def device_presence_key(device):
+    pnp = device.get("pnp") or {}
+    interface_path = pnp.get("device_interface_path")
+    if interface_path:
+        return interface_path.strip().upper()
+    path = device.get("path")
+    return path.strip().upper() if path else None
+
+
+def usb_presence_keys():
+    disks, error = run_collector(
+        "setupapi_enumerator",
+        enumerate_setupapi_disks,
+    )
+    if error is not None:
+        return None, error
+    keys = set()
+    for item in (disks or {}).values():
+        if not item.get("usb"):
+            continue
+        path = item.get("device_interface_path")
+        if path:
+            keys.add(path.strip().upper())
+    return keys, None
+
+
+def watch_interval_from_argv(argv):
+    value = 2.0
+    for index, argument in enumerate(argv):
+        if argument.startswith("--watch-interval="):
+            value = float(argument.split("=", 1)[1])
+        elif argument == "--watch-interval" and index + 1 < len(argv):
+            value = float(argv[index + 1])
+    if value < 0.25:
+        value = 0.25
+    return value
+
+
+def watch_usb(include_diagnostics=False, interval_seconds=2.0, enable_vpd80=False):
+    devices, scan_errors = scan_physical_disks(
+        max_disks=64,
+        include_non_usb=False,
+        enable_vpd80=enable_vpd80,
+    )
+    observed_at = utc_now_iso()
+    host = host_info(include_diagnostics=include_diagnostics)
+    session = collect_active_session()
+    cache = {}
+
+    for device in devices:
+        key = device_presence_key(device)
+        if key:
+            cache[key] = device
+        write_json_stdout(
+            build_observation(device, host, session, observed_at, "snapshot"),
+            compact=True,
+        )
+
+    if scan_errors:
+        sys.stderr.write("Initial watch scan completed with %d error(s).\n" % len(scan_errors))
+
+    while True:
+        try:
+            time.sleep(interval_seconds)
+            current_keys, presence_error = usb_presence_keys()
+            if presence_error is not None:
+                sys.stderr.write(
+                    "USB presence check failed: %s\n" % presence_error.get("message")
+                )
+                continue
+
+            previous_keys = set(cache)
+            added_keys = current_keys - previous_keys
+            removed_keys = previous_keys - current_keys
+            if not added_keys and not removed_keys:
+                continue
+
+            # A full rescan is intentional: a device notification is only a
+            # trigger, while the Observation must contain fresh complete facts.
+            current_devices, current_errors = scan_physical_disks(
+                max_disks=64,
+                include_non_usb=False,
+                enable_vpd80=enable_vpd80,
+            )
+            current_by_key = {}
+            for device in current_devices:
+                key = device_presence_key(device)
+                if key:
+                    current_by_key[key] = device
+
+            event_time = utc_now_iso()
+            event_host = host_info(include_diagnostics=include_diagnostics)
+            event_session = collect_active_session()
+
+            for key in sorted(removed_keys):
+                device = cache.pop(key, None)
+                if device is None:
+                    continue
+                write_json_stdout(
+                    build_observation(
+                        device,
+                        event_host,
+                        event_session,
+                        event_time,
+                        "disconnected",
+                    ),
+                    compact=True,
+                )
+
+            for key in sorted(added_keys):
+                device = current_by_key.get(key)
+                if device is None:
+                    # The interface can appear before storage IOCTLs are ready.
+                    # Do not cache it yet; the next poll will retry collection.
+                    continue
+                cache[key] = device
+                write_json_stdout(
+                    build_observation(
+                        device,
+                        event_host,
+                        event_session,
+                        event_time,
+                        "connected",
+                    ),
+                    compact=True,
+                )
+
+            # Refresh evidence for devices that remained connected across the
+            # rescan without emitting duplicate events.
+            for key in current_keys & set(cache):
+                if key in current_by_key:
+                    cache[key] = current_by_key[key]
+
+            if current_errors:
+                sys.stderr.write(
+                    "Watch rescan completed with %d error(s).\n" % len(current_errors)
+                )
+        except KeyboardInterrupt:
+            return
 
 
 def main():
     include_non_usb = "--all-disks" in sys.argv
+    include_diagnostics = "--debug" in sys.argv or "--diagnostics" in sys.argv
+    enable_vpd80 = "--vpd80" in sys.argv
+
+    if "--watch" in sys.argv:
+        try:
+            interval_seconds = watch_interval_from_argv(sys.argv[1:])
+        except (TypeError, ValueError):
+            sys.stderr.write("--watch-interval must be a number.\n")
+            return 2
+        watch_usb(
+            include_diagnostics=include_diagnostics,
+            interval_seconds=interval_seconds,
+            enable_vpd80=enable_vpd80,
+        )
+        return 0
 
     devices, errors = scan_physical_disks(
         max_disks=64,
         include_non_usb=include_non_usb,
+        enable_vpd80=enable_vpd80,
     )
 
+    observed_at_utc = utc_now_iso()
+    host = host_info(include_diagnostics=include_diagnostics)
+    session = collect_active_session()
+    observations = [
+        build_observation(device, host, session, observed_at_utc)
+        for device in devices
+    ]
+
     result = {
-        "schema_version": 1,
-        "probe_version": "0.1.0",
-        "observed_at_utc": utc_now_iso(),
-        "host": host_info(),
-        "devices": devices,
+        "schema_version": SCHEMA_VERSION,
+        "probe_version": PROBE_VERSION,
+        "scan_id": str(uuid.uuid4()),
+        "generated_at_utc": observed_at_utc,
+        "observations": observations,
+        "scan_capabilities": summarize_capabilities(devices),
         "scan_errors": errors,
     }
 
-    text = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
-    try:
-        print(text)
-    except UnicodeEncodeError:
-        # Старые консоли Windows могут не поддерживать UTF-8.
-        sys.stdout.buffer.write(text.encode("utf-8", "replace"))
-        sys.stdout.buffer.write(b"\n")
+    write_json_stdout(result)
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
