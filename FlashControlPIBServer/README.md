@@ -143,5 +143,19 @@ backlogs. Configure `heartbeat_interval_seconds` (minimum 15 seconds); the
 default is 60 seconds and an agent is shown offline after three minutes.
 
 Heartbeat and observation ingest currently expect the deployment boundary to
-protect these endpoints. Per-agent mTLS authentication is the next transport
-security step and must be enabled before treating agent identity as trusted.
+protect these endpoints. In development, set the same long random
+`FLASHCONTROL_DEV_MACHINE_TOKEN` on Main and `machine_token` on agents/proxies.
+Production refuses this mode and requires mTLS.
+
+The TLS terminator must validate the client certificate, strip any incoming
+`X-FlashControl-Client-*` headers, and inject `X-FlashControl-Client-Verify` and
+`X-FlashControl-Client-Fingerprint`. Main accepts those headers only from
+`FLASHCONTROL_TRUSTED_MTLS_PROXIES`, then resolves the fingerprint through the
+explicit `FLASHCONTROL_MTLS_IDENTITIES` enrollment map. Direct agents cannot
+forward another identity; authenticated proxies must preserve the originating
+agent UUID and both identities are stored on every observation.
+
+The Agent tries Main first and selects a Proxy only after direct delivery
+fails. When several configured CIDRs match a local address, the longest prefix
+wins. The Proxy commits every item to SQLite before returning `202` and removes
+it only after Main acknowledges successful delivery.

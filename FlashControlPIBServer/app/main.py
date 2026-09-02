@@ -1,9 +1,10 @@
 from contextlib import asynccontextmanager
 import datetime
+import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import Body, Depends, FastAPI, HTTPException, Request
+from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
@@ -14,6 +15,7 @@ from .db import engine, get_db, initialize_database
 from .auth import AUTH_PROVIDER, AuthContext, optional_auth_context, router as auth_router
 from .config import ENVIRONMENT
 from .identity import register_computer, resolve_identity
+from .machine_auth import MachinePrincipal, require_machine
 from .models import Agent, Computer, Observation
 from .read_api import router as read_router
 from .schemas import AgentHeartbeatIn, IngestResult, ObservationIn
@@ -95,7 +97,10 @@ def unpack_payload(payload: Any) -> list[ObservationIn]:
     return [ObservationIn.model_validate(value) for value in values]
 
 
-def observation_values(item: ObservationIn, source_ip: str | None) -> dict:
+def observation_values(
+    item: ObservationIn, source_ip: str | None,
+    agent_id: object, proxy_id: object | None,
+) -> dict:
     raw = item.model_dump(mode="json")
     device = item.device
     return {
@@ -119,6 +124,8 @@ def observation_values(item: ObservationIn, source_ip: str | None) -> dict:
         "collector_errors": item.collector_errors,
         "raw_observation": raw,
         "source_ip": source_ip,
+        "agent_id": agent_id,
+        "proxy_id": proxy_id,
     }
 
 
@@ -137,8 +144,16 @@ def health_ready(db: Session = Depends(get_db)) -> dict[str, str]:
 def agent_heartbeat(
     request: Request,
     payload: AgentHeartbeatIn,
+    principal: MachinePrincipal = Depends(require_machine),
     db: Session = Depends(get_db),
 ) -> dict:
+    if principal.kind == "agent":
+        if payload.agent_id != principal.id:
+            raise HTTPException(status_code=403, detail="agent identity mismatch")
+        if payload.proxy_id is not None:
+            raise HTTPException(status_code=403, detail="direct agent cannot assert proxy identity")
+    elif payload.proxy_id != principal.id:
+        raise HTTPException(status_code=403, detail="proxy identity mismatch")
     now = datetime.datetime.now(datetime.timezone.utc)
     agent = db.get(Agent, payload.agent_id)
     if agent is None:
@@ -167,8 +182,20 @@ def agent_heartbeat(
 def ingest_observations(
     request: Request,
     payload: Any = Body(...),
+    forwarded_agent_id: uuid.UUID | None = Header(
+        default=None, alias="X-FlashControl-Forwarded-Agent-ID"
+    ),
+    principal: MachinePrincipal = Depends(require_machine),
     db: Session = Depends(get_db),
 ) -> IngestResult:
+    if principal.kind == "agent":
+        if forwarded_agent_id is not None:
+            raise HTTPException(status_code=403, detail="agent cannot forward another agent")
+        source_agent_id, source_proxy_id = principal.id, None
+    else:
+        if forwarded_agent_id is None:
+            raise HTTPException(status_code=400, detail="forwarded agent ID is required")
+        source_agent_id, source_proxy_id = forwarded_agent_id, principal.id
     try:
         observations = unpack_payload(payload)
     except (ValidationError, ValueError) as exc:
@@ -178,7 +205,9 @@ def ingest_observations(
     source_ip = request.client.host if request.client else None
     accepted_ids = []
     for item in observations:
-        statement = idempotent_insert(observation_values(item, source_ip))
+        statement = idempotent_insert(observation_values(
+            item, source_ip, source_agent_id, source_proxy_id
+        ))
         inserted = db.execute(statement).scalar_one_or_none()
         if inserted is not None:
             accepted_ids.append(inserted)

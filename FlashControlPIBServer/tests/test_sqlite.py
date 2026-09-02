@@ -9,6 +9,7 @@ TEST_DIRECTORY = tempfile.mkdtemp(prefix="flashcontrol-server-")
 TEST_DATABASE = os.path.join(TEST_DIRECTORY, "test.db")
 os.environ["FLASHCONTROL_ENVIRONMENT"] = "test"
 os.environ["FLASHCONTROL_DATABASE_URL"] = "sqlite:///" + TEST_DATABASE.replace("\\", "/")
+os.environ["FLASHCONTROL_DEV_MACHINE_TOKEN"] = "test-machine-token"
 
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -46,6 +47,12 @@ class SqliteApiTests(unittest.TestCase):
     def setUpClass(cls):
         cls.client_context = TestClient(app)
         cls.client = cls.client_context.__enter__()
+        cls.agent_id = uuid.uuid4()
+        cls.client.headers.update({
+            "X-FlashControl-Machine-Token": "test-machine-token",
+            "X-FlashControl-Machine-ID": str(cls.agent_id),
+            "X-FlashControl-Machine-Kind": "agent",
+        })
         with SessionLocal() as session:
             create_local_user(session, "test-admin", "correct horse battery staple", "admin")
             create_local_user(session, "test-auditor", "auditor password for tests", "auditor")
@@ -68,7 +75,7 @@ class SqliteApiTests(unittest.TestCase):
         self.assertEqual(self.client.get("/docs").status_code, 200)
 
     def test_agent_heartbeat_is_upserted_and_visible(self):
-        agent_id = uuid.uuid4()
+        agent_id = self.agent_id
         payload = {
             "agent_id": str(agent_id),
             "agent_version": "0.4.0",
@@ -150,6 +157,8 @@ class SqliteApiTests(unittest.TestCase):
                 select(IdentityDecision).where(IdentityDecision.observation_id == observation.id)
             )
             self.assertIsNotNone(session.get(Computer, observation.computer_id))
+            self.assertEqual(observation.agent_id, self.agent_id)
+            self.assertIsNone(observation.proxy_id)
             self.assertIsNotNone(session.get(PhysicalDevice, observation.physical_device_id))
             self.assertIsNotNone(session.get(MediaState, observation.media_state_id))
             self.assertEqual(decision.result, "UNKNOWN")
@@ -317,6 +326,47 @@ class SqliteApiTests(unittest.TestCase):
         guest.close()
 
         self.assertEqual(self.client.get("/api/v1/audit-log").status_code, 200)
+
+    def test_machine_credentials_and_identity_are_required(self):
+        payload = observation_payload(uuid.uuid4())
+        guest = TestClient(app)
+        self.assertEqual(guest.post("/api/v1/observations", json=payload).status_code, 401)
+        wrong_headers = {
+            "X-FlashControl-Machine-Token": "test-machine-token",
+            "X-FlashControl-Machine-ID": str(uuid.uuid4()),
+            "X-FlashControl-Machine-Kind": "agent",
+        }
+        heartbeat = {
+            "agent_id": str(self.agent_id), "agent_version": "0.4.0",
+            "hostname": "host", "domain": None, "current_ips": [],
+            "queue_size": 0, "selected_route": "direct", "proxy_id": None,
+        }
+        self.assertEqual(
+            guest.post("/api/v1/agents/heartbeat", json=heartbeat, headers=wrong_headers).status_code,
+            403,
+        )
+        guest.close()
+
+    def test_authenticated_proxy_can_forward_for_agent(self):
+        event_id = uuid.uuid4()
+        proxy_id = uuid.uuid4()
+        source_agent_id = uuid.uuid4()
+        headers = {
+            "X-FlashControl-Machine-Token": "test-machine-token",
+            "X-FlashControl-Machine-ID": str(proxy_id),
+            "X-FlashControl-Machine-Kind": "proxy",
+            "X-FlashControl-Forwarded-Agent-ID": str(source_agent_id),
+        }
+        response = self.client.post(
+            "/api/v1/observations", json=observation_payload(event_id), headers=headers
+        )
+        self.assertEqual(response.status_code, 200)
+        with SessionLocal() as session:
+            observation = session.scalar(
+                select(Observation).where(Observation.event_id == event_id)
+            )
+            self.assertEqual(observation.agent_id, source_agent_id)
+            self.assertEqual(observation.proxy_id, proxy_id)
 
     def test_login_attempts_are_rate_limited_and_audited(self):
         guest = TestClient(app)

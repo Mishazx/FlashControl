@@ -32,6 +32,8 @@ class ProductionConfigurationTests(unittest.TestCase):
             "FLASHCONTROL_OIDC_REDIRECT_URI", "FLASHCONTROL_OIDC_ADMIN_GROUPS",
             "FLASHCONTROL_OIDC_SECURITY_GROUPS", "FLASHCONTROL_OIDC_AUDITOR_GROUPS",
             "FLASHCONTROL_OIDC_DEFAULT_ROLE",
+            "FLASHCONTROL_MACHINE_AUTH_MODE", "FLASHCONTROL_DEV_MACHINE_TOKEN",
+            "FLASHCONTROL_TRUSTED_MTLS_PROXIES", "FLASHCONTROL_MTLS_IDENTITIES",
         ):
             environment.pop(name, None)
         environment.update(values)
@@ -70,6 +72,11 @@ class ProductionConfigurationTests(unittest.TestCase):
             FLASHCONTROL_OIDC_CLIENT_ID="flashcontrol",
             FLASHCONTROL_OIDC_REDIRECT_URI="https://flash.example/api/v1/auth/oidc/callback",
             FLASHCONTROL_OIDC_ADMIN_GROUPS="flash-admins",
+            FLASHCONTROL_MACHINE_AUTH_MODE="mtls",
+            FLASHCONTROL_TRUSTED_MTLS_PROXIES="127.0.0.1/32",
+            FLASHCONTROL_MTLS_IDENTITIES=(
+                '{"aabb":"agent:11111111-1111-1111-1111-111111111111"}'
+            ),
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 

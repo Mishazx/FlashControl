@@ -74,3 +74,7 @@ def build_heartbeat(agent_id, agent_version, queue_size, host=None,
         "selected_route": selected_route,
         "proxy_id": proxy_id,
     }
+
+
+def current_ips(host):
+    return build_heartbeat("00000000-0000-0000-0000-000000000000", "0", 0, host)["current_ips"]

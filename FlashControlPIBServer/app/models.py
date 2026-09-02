@@ -46,6 +46,8 @@ class Observation(Base):
     raw_observation: Mapped[dict] = mapped_column(json_type, nullable=False)
 
     source_ip: Mapped[str | None] = mapped_column(Text)
+    agent_id: Mapped[object | None] = mapped_column(Uuid(as_uuid=True), index=True)
+    proxy_id: Mapped[object | None] = mapped_column(Uuid(as_uuid=True), index=True)
     computer_id: Mapped[object | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("computers.id"))
     physical_device_id: Mapped[object | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("physical_devices.id"))
     media_state_id: Mapped[object | None] = mapped_column(Uuid(as_uuid=True), ForeignKey("media_states.id"))

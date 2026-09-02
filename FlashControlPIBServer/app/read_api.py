@@ -89,6 +89,8 @@ def observation_summary(observation: Observation, decision: IdentityDecision | N
         "computer_id": observation.computer_id,
         "physical_device_id": observation.physical_device_id,
         "media_state_id": observation.media_state_id,
+        "agent_id": observation.agent_id,
+        "proxy_id": observation.proxy_id,
         "hardware_stable_sha256": observation.hardware_stable_sha256,
         "media_identity_sha256": observation.media_identity_sha256,
         "media_state_sha256": observation.media_state_sha256,

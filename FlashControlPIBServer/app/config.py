@@ -1,4 +1,5 @@
 import os
+import json
 
 
 def _csv_set(name: str) -> frozenset[str]:
@@ -32,6 +33,19 @@ OIDC_SECURITY_GROUPS = _csv_set("FLASHCONTROL_OIDC_SECURITY_GROUPS")
 OIDC_AUDITOR_GROUPS = _csv_set("FLASHCONTROL_OIDC_AUDITOR_GROUPS")
 OIDC_DEFAULT_ROLE = os.environ.get("FLASHCONTROL_OIDC_DEFAULT_ROLE", "").strip().lower()
 SESSION_HOURS = max(1, int(os.environ.get("FLASHCONTROL_SESSION_HOURS", "8")))
+MACHINE_AUTH_MODE = os.environ.get(
+    "FLASHCONTROL_MACHINE_AUTH_MODE",
+    "mtls" if ENVIRONMENT == "production" else "token",
+).lower()
+DEV_MACHINE_TOKEN = os.environ.get("FLASHCONTROL_DEV_MACHINE_TOKEN", "").strip()
+TRUSTED_MTLS_PROXIES = tuple(
+    item.strip() for item in os.environ.get("FLASHCONTROL_TRUSTED_MTLS_PROXIES", "").split(",")
+    if item.strip()
+)
+try:
+    MTLS_IDENTITIES = json.loads(os.environ.get("FLASHCONTROL_MTLS_IDENTITIES", "{}"))
+except ValueError as exc:
+    raise RuntimeError("FLASHCONTROL_MTLS_IDENTITIES must be valid JSON") from exc
 
 if ENVIRONMENT == "production" and DATABASE_URL.startswith("sqlite"):
     raise RuntimeError("SQLite is not allowed in production")
@@ -53,3 +67,11 @@ if AUTH_PROVIDER == "oidc" and not (
     raise RuntimeError("OIDC requires at least one group mapping or an explicit default role")
 if AUTH_PROVIDER not in ("local", "oidc"):
     raise RuntimeError("unsupported authentication provider: %s" % AUTH_PROVIDER)
+if MACHINE_AUTH_MODE not in ("token", "mtls"):
+    raise RuntimeError("machine authentication mode must be token or mtls")
+if MACHINE_AUTH_MODE == "token" and not DEV_MACHINE_TOKEN and ENVIRONMENT != "test":
+    raise RuntimeError("development machine token is required")
+if ENVIRONMENT == "production" and MACHINE_AUTH_MODE != "mtls":
+    raise RuntimeError("production machine authentication must use mtls")
+if MACHINE_AUTH_MODE == "mtls" and (not TRUSTED_MTLS_PROXIES or not MTLS_IDENTITIES):
+    raise RuntimeError("mTLS requires trusted proxy CIDRs and certificate identities")

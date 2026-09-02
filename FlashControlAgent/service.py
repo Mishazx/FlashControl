@@ -8,6 +8,7 @@ import io
 import json
 import logging
 import os
+import ssl
 import sys
 import time
 import traceback
@@ -16,7 +17,8 @@ import urllib.request
 from logging.handlers import RotatingFileHandler
 
 from delivery_queue import DeliveryQueue, deliver_due
-from heartbeat import build_heartbeat, heartbeat_url, host_from_observation, load_or_create_agent_id
+from heartbeat import build_heartbeat, current_ips, heartbeat_url, host_from_observation, load_or_create_agent_id
+from routing import select_proxy
 
 import servicemanager
 import win32event
@@ -43,6 +45,11 @@ DEFAULT_CONFIG = {
     "heartbeat_url": "",
     "heartbeat_interval_seconds": 60,
     "agent_id_file": "FlashControlAgent.id",
+    "machine_token": "",
+    "proxies": [],
+    "ca_file": "",
+    "client_cert_file": "",
+    "client_key_file": "",
 }
 
 
@@ -153,24 +160,63 @@ def capture_collector_json(collector_args):
     return text
 
 
-def post_json(server_url, json_text, timeout_seconds):
+def machine_headers(agent_id, token):
+    return {
+        "X-FlashControl-Machine-ID": agent_id,
+        "X-FlashControl-Machine-Kind": "agent",
+        "X-FlashControl-Machine-Token": token or "",
+    }
+
+
+def ssl_context(config):
+    context = ssl.create_default_context(
+        cafile=config.get("ca_file") or None
+    )
+    certificate = config.get("client_cert_file") or ""
+    if certificate:
+        context.load_cert_chain(certificate, config.get("client_key_file") or None)
+    return context
+
+
+def post_json(server_url, json_text, timeout_seconds, headers=None, context=None):
     if not isinstance(json_text, str):
         json_text = json.dumps(json_text, ensure_ascii=False, separators=(",", ":"))
+    request_headers = {"Content-Type": "application/json; charset=utf-8"}
+    request_headers.update(headers or {})
     request = urllib.request.Request(
         server_url,
         data=json_text.encode("utf-8"),
-        headers={"Content-Type": "application/json; charset=utf-8"},
+        headers=request_headers,
         method="POST",
     )
-    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+    with urllib.request.urlopen(request, timeout=timeout_seconds, context=context) as response:
         response.read()
         return response.getcode()
 
 
 def drain_delivery_queue(queue, server_url, timeout_seconds, batch_size,
-                         retry_interval_seconds, retry_max_seconds, logger):
+                         retry_interval_seconds, retry_max_seconds, logger,
+                         agent_id, machine_token, proxy, route_state, context):
     def sender(payload_json):
-        status_code = post_json(server_url, payload_json, timeout_seconds)
+        headers = machine_headers(agent_id, machine_token)
+        try:
+            status_code = post_json(server_url, payload_json, timeout_seconds, headers, context)
+            route_state["selected"] = "direct"
+            route_state["proxy_id"] = None
+        except Exception as exc:
+            if isinstance(exc, urllib.error.HTTPError) and exc.code < 500:
+                raise
+            if not proxy:
+                route_state["selected"] = "offline"
+                raise
+            proxy_headers = machine_headers(
+                agent_id, proxy.get("machine_token") or machine_token
+            )
+            status_code = post_json(
+                proxy["server_url"], payload_json, timeout_seconds, proxy_headers, context
+            )
+            route_state["selected"] = "proxy"
+            route_state["proxy_id"] = proxy.get("id")
         if status_code < 200 or status_code >= 300:
             raise RuntimeError("server returned HTTP %s" % status_code)
 
@@ -235,6 +281,7 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
             15, int(self.config.get("heartbeat_interval_seconds") or 60)
         )
         agent_id = load_or_create_agent_id(agent_id_path(self.config))
+        transport_ssl_context = ssl_context(self.config)
 
         collector_args = self.config.get("collector_args") or []
         if self.config.get("include_non_usb"):
@@ -247,6 +294,7 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
         next_collection_at = 0
         next_heartbeat_at = 0
         last_host = {}
+        route_state = {"selected": "offline", "proxy_id": None}
         try:
             while True:
                 now = time.time()
@@ -266,10 +314,13 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
                     next_collection_at = time.time() + interval_seconds
 
                 server_url = (self.config.get("server_url") or "").strip()
+                proxy = select_proxy(self.config.get("proxies") or [], current_ips(last_host))
                 if server_url:
                     delivered = drain_delivery_queue(
                         queue, server_url, timeout_seconds, batch_size,
                         retry_interval_seconds, retry_max_seconds, self.logger,
+                        agent_id, self.config.get("machine_token") or "", proxy, route_state,
+                        transport_ssl_context,
                     )
                     if delivered:
                         self.logger.info(
@@ -285,14 +336,41 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
                 if target_heartbeat_url and now >= next_heartbeat_at:
                     try:
                         import main as collector
-                        post_json(
-                            target_heartbeat_url,
-                            build_heartbeat(
-                                agent_id, collector.PROBE_VERSION, queue.count(), last_host
-                            ),
-                            timeout_seconds,
+                        heartbeat_payload = build_heartbeat(
+                            agent_id, collector.PROBE_VERSION, queue.count(), last_host,
+                            "direct", None,
                         )
+                        try:
+                            post_json(
+                                target_heartbeat_url, heartbeat_payload, timeout_seconds,
+                                machine_headers(agent_id, self.config.get("machine_token") or ""),
+                                transport_ssl_context,
+                            )
+                            route_state["selected"], route_state["proxy_id"] = "direct", None
+                        except Exception as exc:
+                            if isinstance(exc, urllib.error.HTTPError) and exc.code < 500:
+                                raise
+                            if not proxy:
+                                raise
+                            proxy_heartbeat_url = proxy.get("heartbeat_url") or heartbeat_url(
+                                proxy.get("server_url", ""), ""
+                            )
+                            proxy_payload = build_heartbeat(
+                                agent_id, collector.PROBE_VERSION, queue.count(), last_host,
+                                "proxy", proxy.get("id"),
+                            )
+                            post_json(
+                                proxy_heartbeat_url, proxy_payload, timeout_seconds,
+                                machine_headers(
+                                    agent_id, proxy.get("machine_token")
+                                    or self.config.get("machine_token") or ""
+                                ),
+                                transport_ssl_context,
+                            )
+                            route_state["selected"] = "proxy"
+                            route_state["proxy_id"] = proxy.get("id")
                     except Exception as exc:
+                        route_state["selected"], route_state["proxy_id"] = "offline", None
                         self.logger.warning("heartbeat failed: %s", exc)
                     next_heartbeat_at = time.time() + heartbeat_interval
 

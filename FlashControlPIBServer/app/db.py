@@ -24,6 +24,8 @@ def initialize_sqlite_database(target_engine):
         "computer_id": "CHAR(32) REFERENCES computers (id)",
         "physical_device_id": "CHAR(32) REFERENCES physical_devices (id)",
         "media_state_id": "CHAR(32) REFERENCES media_states (id)",
+        "agent_id": "CHAR(32)",
+        "proxy_id": "CHAR(32)",
     }
     with target_engine.begin() as connection:
         for name, definition in additions.items():
@@ -38,6 +40,12 @@ def initialize_sqlite_database(target_engine):
         connection.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_observations_physical_device_id "
             "ON observations (physical_device_id)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_observations_agent_id ON observations (agent_id)"
+        ))
+        connection.execute(text(
+            "CREATE INDEX IF NOT EXISTS ix_observations_proxy_id ON observations (proxy_id)"
         ))
 
 
