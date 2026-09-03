@@ -3,13 +3,13 @@
   "description": "База для ручного format-теста: scan до/после format в Windows",
   "size_mb": 64,
   "partition_style": "mbr",
-  "mbr_signature": "F0RMAT01",
+  "mbr_signature": "F0A7A001",
   "partitions": [
     {
       "number": 1,
       "filesystem": "fat32",
       "label": "FORMAT_ME",
-      "volume_serial": "FMT00001"
+      "volume_serial": "F0A70001"
     }
   ],
   "expect": {

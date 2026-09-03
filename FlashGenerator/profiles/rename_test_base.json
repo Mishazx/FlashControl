@@ -11,7 +11,7 @@
       "label": "RENAME_ME",
       "gpt_name": "BeforeRename",
       "partition_guid": "ffffffff-ffff-ffff-ffff-ffffffffffff",
-      "volume_serial": "RENAME01"
+      "volume_serial": "D3AD0001"
     }
   ],
   "expect": {
