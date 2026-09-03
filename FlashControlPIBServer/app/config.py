@@ -2,36 +2,12 @@ import json
 import os
 
 
-def _csv_set(name: str) -> frozenset[str]:
-    return frozenset(
-        item.strip().casefold()
-        for item in os.environ.get(name, "").split(",")
-        if item.strip()
-    )
-
-
 ENVIRONMENT = os.environ.get("FLASHCONTROL_ENVIRONMENT", "development").lower()
 DATABASE_URL = os.environ.get(
     "FLASHCONTROL_DATABASE_URL",
     "sqlite:///./flashcontrol-dev.db",
 )
 LOG_LEVEL = os.environ.get("FLASHCONTROL_LOG_LEVEL", "INFO").upper()
-AUTH_PROVIDER = os.environ.get(
-    "FLASHCONTROL_AUTH_PROVIDER",
-    "oidc" if ENVIRONMENT == "production" else "local",
-).lower()
-OIDC_ISSUER = os.environ.get("FLASHCONTROL_OIDC_ISSUER", "").strip()
-OIDC_CLIENT_ID = os.environ.get("FLASHCONTROL_OIDC_CLIENT_ID", "").strip()
-OIDC_CLIENT_SECRET = os.environ.get("FLASHCONTROL_OIDC_CLIENT_SECRET", "").strip()
-OIDC_REDIRECT_URI = os.environ.get("FLASHCONTROL_OIDC_REDIRECT_URI", "").strip()
-OIDC_SCOPES = os.environ.get(
-    "FLASHCONTROL_OIDC_SCOPES", "openid profile email groups"
-).split()
-OIDC_GROUP_CLAIM = os.environ.get("FLASHCONTROL_OIDC_GROUP_CLAIM", "groups").strip()
-OIDC_ADMIN_GROUPS = _csv_set("FLASHCONTROL_OIDC_ADMIN_GROUPS")
-OIDC_SECURITY_GROUPS = _csv_set("FLASHCONTROL_OIDC_SECURITY_GROUPS")
-OIDC_AUDITOR_GROUPS = _csv_set("FLASHCONTROL_OIDC_AUDITOR_GROUPS")
-OIDC_DEFAULT_ROLE = os.environ.get("FLASHCONTROL_OIDC_DEFAULT_ROLE", "").strip().lower()
 SESSION_HOURS = max(1, int(os.environ.get("FLASHCONTROL_SESSION_HOURS", "8")))
 MACHINE_AUTH_MODE = os.environ.get(
     "FLASHCONTROL_MACHINE_AUTH_MODE",
@@ -55,26 +31,38 @@ ENROLL_NETWORKS = tuple(
     if item.strip()
 )
 
+
+def _csv_set(name: str) -> frozenset[str]:
+    return frozenset(
+        item.strip().casefold()
+        for item in os.environ.get(name, "").split(",")
+        if item.strip()
+    )
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+LDAP_SERVER_URI = os.environ.get("FLASHCONTROL_LDAP_SERVER_URI", "").strip()
+LDAP_START_TLS = _env_bool("FLASHCONTROL_LDAP_START_TLS", False)
+LDAP_TLS_CERT_POLICY = os.environ.get("FLASHCONTROL_LDAP_TLS_CERT_POLICY", "demand").strip().lower()
+LDAP_BASE_DN = os.environ.get("FLASHCONTROL_LDAP_BASE_DN", "").strip()
+LDAP_DOMAIN_NAME = os.environ.get("FLASHCONTROL_LDAP_DOMAIN_NAME", "").strip()
+LDAP_GROUP_PARENT_DN = os.environ.get("FLASHCONTROL_LDAP_GROUP_PARENT_DN", "").strip()
+LDAP_ACCESS_GROUP = os.environ.get("FLASHCONTROL_LDAP_ACCESS_GROUP", "").strip()
+LDAP_ADMIN_GROUPS = _csv_set("FLASHCONTROL_LDAP_ADMIN_GROUPS")
+LDAP_SECURITY_GROUPS = _csv_set("FLASHCONTROL_LDAP_SECURITY_GROUPS")
+LDAP_AUDITOR_GROUPS = _csv_set("FLASHCONTROL_LDAP_AUDITOR_GROUPS")
+LDAP_DEFAULT_ROLE = os.environ.get("FLASHCONTROL_LDAP_DEFAULT_ROLE", "").strip().lower()
+LDAP_NETWORK_TIMEOUT = max(1, int(os.environ.get("FLASHCONTROL_LDAP_NETWORK_TIMEOUT", "5")))
+LDAP_TIMEOUT = max(1, int(os.environ.get("FLASHCONTROL_LDAP_TIMEOUT", "5")))
+
 if ENVIRONMENT == "production" and DATABASE_URL.startswith("sqlite"):
     raise RuntimeError("SQLite is not allowed in production")
-if ENVIRONMENT == "production" and AUTH_PROVIDER != "oidc":
-    raise RuntimeError("production authentication provider must be oidc")
-if AUTH_PROVIDER == "oidc" and (not OIDC_ISSUER or not OIDC_CLIENT_ID):
-    raise RuntimeError("OIDC issuer and client ID are required")
-if ENVIRONMENT == "production" and not OIDC_REDIRECT_URI:
-    raise RuntimeError("production OIDC redirect URI is required")
-if ENVIRONMENT == "production" and not OIDC_ISSUER.startswith("https://"):
-    raise RuntimeError("production OIDC issuer must use HTTPS")
-if ENVIRONMENT == "production" and not OIDC_REDIRECT_URI.startswith("https://"):
-    raise RuntimeError("production OIDC redirect URI must use HTTPS")
-if OIDC_DEFAULT_ROLE not in ("", "admin", "security", "auditor"):
-    raise RuntimeError("OIDC default role must be admin, security, auditor, or empty")
-if AUTH_PROVIDER == "oidc" and not (
-    OIDC_ADMIN_GROUPS or OIDC_SECURITY_GROUPS or OIDC_AUDITOR_GROUPS or OIDC_DEFAULT_ROLE
-):
-    raise RuntimeError("OIDC requires at least one group mapping or an explicit default role")
-if AUTH_PROVIDER not in ("local", "oidc"):
-    raise RuntimeError("unsupported authentication provider: %s" % AUTH_PROVIDER)
 if MACHINE_AUTH_MODE not in ("token", "mtls"):
     raise RuntimeError("machine authentication mode must be token or mtls")
 if MACHINE_AUTH_MODE == "token" and not DEV_MACHINE_TOKEN and ENVIRONMENT != "test":
@@ -83,3 +71,14 @@ if ENVIRONMENT == "production" and MACHINE_AUTH_MODE != "mtls":
     raise RuntimeError("production machine authentication must use mtls")
 if MACHINE_AUTH_MODE == "mtls" and (not TRUSTED_MTLS_PROXIES or not MTLS_IDENTITIES):
     raise RuntimeError("mTLS requires trusted proxy CIDRs and certificate identities")
+if LDAP_TLS_CERT_POLICY not in ("demand", "allow", "never", "none", "0", "1"):
+    raise RuntimeError("LDAP TLS cert policy must be demand, allow, or never")
+if LDAP_DEFAULT_ROLE not in ("", "admin", "security", "auditor"):
+    raise RuntimeError("LDAP default role must be admin, security, auditor, or empty")
+if LDAP_SERVER_URI:
+    if not LDAP_BASE_DN or not LDAP_DOMAIN_NAME:
+        raise RuntimeError("LDAP base DN and domain name are required")
+    if not (
+        LDAP_ADMIN_GROUPS or LDAP_SECURITY_GROUPS or LDAP_AUDITOR_GROUPS or LDAP_DEFAULT_ROLE
+    ):
+        raise RuntimeError("LDAP requires at least one group mapping or an explicit default role")

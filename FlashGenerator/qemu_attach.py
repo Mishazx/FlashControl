@@ -12,6 +12,7 @@
 from __future__ import print_function
 
 import json
+import hashlib
 import os
 import re
 import sys
@@ -59,6 +60,15 @@ def merge_qemu_attach(image_path):
         value = env_or_none(env_name)
         if value is not None:
             attach[key] = value
+
+    # Keep QEMU's virtual hardware identity stable for a generated image even
+    # when its profile did not specify one explicitly.  QEMU otherwise derives
+    # a transient serial from the attachment slot, which looks like a new USB
+    # device after every detach/attach.
+    image_name = os.path.basename(image_path).encode("utf-8")
+    identity = hashlib.sha256(image_name).hexdigest()[:16].upper()
+    attach.setdefault("usb_serial", "FG-" + identity)
+    attach.setdefault("drive_serial", "STOR-" + identity)
 
     return attach
 

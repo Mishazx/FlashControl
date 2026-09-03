@@ -168,6 +168,10 @@ class SqliteApiTests(unittest.TestCase):
         self.assertEqual(script.status_code, 200)
         self.assertIn("javascript", script.headers["content-type"])
         self.assertIn('const API = "/api/v1"', script.text)
+        self.assertIn("confidenceColumnHint", script.text)
+        self.assertIn("identityConfidenceHints", script.text)
+        self.assertIn(".hint { cursor: help; }", styles.text)
+        self.assertIn("tbody tr.clickable .hint { cursor: help; }", styles.text)
 
     def test_duplicate_event_is_idempotent(self):
         event_id = uuid.uuid4()
@@ -406,6 +410,82 @@ class SqliteApiTests(unittest.TestCase):
             404,
         )
 
+    def test_cleanup_endpoints_delete_events_and_devices(self):
+        single_event_id = uuid.uuid4()
+        single_response = self.client.post(
+            "/api/v1/observations",
+            json=observation_payload(
+                single_event_id,
+                hostname="cleanup-event-host",
+                hardware="c",
+                media="d",
+                state="e",
+            ),
+        )
+        self.assertEqual(single_response.status_code, 200)
+        with SessionLocal() as session:
+            single_observation = session.scalar(
+                select(Observation).where(Observation.event_id == single_event_id)
+            )
+            single_device_id = single_observation.physical_device_id
+
+        csrf = self.client.cookies.get("flashcontrol_csrf")
+        deleted_event = self.client.delete(
+            "/api/v1/observations/" + str(single_event_id),
+            headers={"X-CSRF-Token": csrf},
+        )
+        self.assertEqual(deleted_event.status_code, 200)
+        self.assertEqual(deleted_event.json()["deleted_observations"], 1)
+        with SessionLocal() as session:
+            self.assertIsNone(session.scalar(select(Observation).where(Observation.event_id == single_event_id)))
+            self.assertIsNone(session.get(PhysicalDevice, single_device_id))
+
+        first_event_id = uuid.uuid4()
+        second_event_id = uuid.uuid4()
+        first_multi = self.client.post(
+            "/api/v1/observations",
+            json=observation_payload(
+                first_event_id,
+                hostname="cleanup-device-host",
+                hardware="g",
+                media="h",
+                state="i",
+            ),
+        )
+        second_multi = self.client.post(
+            "/api/v1/observations",
+            json=observation_payload(
+                second_event_id,
+                hostname="cleanup-device-host",
+                hardware="g",
+                media="h",
+                state="i",
+            ),
+        )
+        self.assertEqual(first_multi.status_code, 200)
+        self.assertEqual(second_multi.status_code, 200)
+        with SessionLocal() as session:
+            device_id = session.scalar(
+                select(PhysicalDevice.id)
+                .join(Observation, Observation.physical_device_id == PhysicalDevice.id)
+                .where(Observation.event_id == first_event_id)
+            )
+
+        deleted_device = self.client.delete(
+            "/api/v1/devices/" + str(device_id),
+            headers={"X-CSRF-Token": csrf},
+        )
+        self.assertEqual(deleted_device.status_code, 200)
+        self.assertEqual(deleted_device.json()["deleted_devices"], 1)
+        with SessionLocal() as session:
+            self.assertIsNone(session.get(PhysicalDevice, device_id))
+            remaining = session.scalar(
+                select(func.count())
+                .select_from(Observation)
+                .where(Observation.event_id.in_((first_event_id, second_event_id)))
+            )
+        self.assertEqual(remaining, 0)
+
     def test_authentication_session_csrf_and_roles(self):
         guest = TestClient(app)
         self.assertEqual(
@@ -438,6 +518,50 @@ class SqliteApiTests(unittest.TestCase):
         guest.close()
 
         self.assertEqual(self.client.get("/api/v1/audit-log").status_code, 200)
+
+    def test_ldap_login_creates_directory_user_and_assigns_role(self):
+        from unittest.mock import patch
+
+        from app.ldap_auth import LdapLoginOutcome
+        from app.models import AuthUser
+
+        guest = TestClient(app)
+        outcome = LdapLoginOutcome(True, "ivan", role="security", display_name="Ivan")
+        try:
+            with patch("app.auth.ldap_configured", return_value=True), \
+                patch("app.auth.perform_ldap_login", return_value=outcome):
+                login = guest.post(
+                    "/api/v1/auth/login",
+                    json={"username": r"MOSMETRO\Ivan", "password": "domain password"},
+                )
+            self.assertEqual(login.status_code, 200)
+            self.assertEqual(login.json(), {"username": "ivan", "role": "security"})
+            self.assertEqual(guest.get("/api/v1/computers").status_code, 200)
+            with SessionLocal() as session:
+                user = session.scalar(select(AuthUser).where(AuthUser.username == "ivan"))
+                self.assertIsNotNone(user)
+                self.assertIsNone(user.password_hash)
+                self.assertEqual(user.role, "security")
+        finally:
+            guest.close()
+
+    def test_ldap_login_without_group_is_forbidden(self):
+        from unittest.mock import patch
+
+        from app.ldap_auth import LdapLoginOutcome
+
+        guest = TestClient(app)
+        outcome = LdapLoginOutcome(False, "ivan", failure="not_in_group")
+        try:
+            with patch("app.auth.ldap_configured", return_value=True), \
+                patch("app.auth.perform_ldap_login", return_value=outcome):
+                response = guest.post(
+                    "/api/v1/auth/login",
+                    json={"username": "ivan", "password": "domain password"},
+                )
+            self.assertEqual(response.status_code, 403)
+        finally:
+            guest.close()
 
     def test_machine_credentials_and_identity_are_required(self):
         payload = observation_payload(uuid.uuid4())

@@ -1557,8 +1557,6 @@ def host_info(include_diagnostics=False):
     }
     if join_info["domain_name"]:
         result["domain_name"] = join_info["domain_name"]
-    elif join_info["workgroup_name"]:
-        result["workgroup_name"] = join_info["workgroup_name"]
     if include_diagnostics:
         win32 = platform.win32_ver()
         result["computer_name"] = result["hostname"]
@@ -1618,9 +1616,17 @@ SESSION_PAYLOAD_KEYS = (
 
 HASH_FIELDS = (
     ("hardware_stable", "hardware_stable_sha256"),
-    ("pnp", "pnp_observation_sha256"),
     ("media_identity", "media_identity_sha256"),
     ("media_state", "media_state_sha256"),
+)
+
+DEBUG_HASH_FIELDS = HASH_FIELDS + (
+    ("pnp", "pnp_observation_sha256"),
+)
+
+HOST_PAYLOAD_KEYS = (
+    "hostname",
+    "domain_name",
 )
 
 DEVICE_HASH_KEYS = (
@@ -1668,18 +1674,18 @@ def compact_layout(layout):
 
 def compact_volume(volume):
     result = {}
-    letters = volume.get("letters") or volume.get("drive_letters")
-    if letters:
-        result["letters"] = letters
     if volume.get("filesystem"):
         result["filesystem"] = volume["filesystem"]
     serial = volume.get("serial") or volume.get("volume_serial")
     if serial:
         result["serial"] = serial
-    label = volume.get("label") or volume.get("volume_label")
-    if label:
-        result["label"] = label
     return result
+
+
+def compact_host(host):
+    if not isinstance(host, dict):
+        return host
+    return compact_mapping(host, HOST_PAYLOAD_KEYS)
 
 
 def compact_session(session, host=None):
@@ -1693,9 +1699,10 @@ def compact_session(session, host=None):
     return result
 
 
-def observation_hashes(device_record):
+def observation_hashes(device_record, compact=True):
     result = {}
-    for short_name, full_name in HASH_FIELDS:
+    fields = HASH_FIELDS if compact else DEBUG_HASH_FIELDS
+    for short_name, full_name in fields:
         value = device_record.get(full_name)
         if value:
             result[short_name] = value
@@ -1738,7 +1745,7 @@ def build_observation(
     compact=True,
 ):
     device = dict(device_record)
-    hashes = observation_hashes(device)
+    hashes = observation_hashes(device, compact=compact)
     capabilities = device.pop("capabilities", {})
     capability_status = device.pop("capability_status", {})
     collector_errors = collector_error_list(device.pop("collector_errors", {}))
@@ -1747,6 +1754,7 @@ def build_observation(
     if compact:
         device = compact_device_payload(device)
         session = compact_session(session, host)
+        host = compact_host(host)
     payload = {
         "schema_version": SCHEMA_VERSION,
         "probe_version": PROBE_VERSION,

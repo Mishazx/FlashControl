@@ -31,6 +31,12 @@ class ProductionConfigurationTests(unittest.TestCase):
             "FLASHCONTROL_DEV_MACHINE_TOKEN", "FLASHCONTROL_TRUSTED_PROXIES",
             "FLASHCONTROL_TRUSTED_MTLS_PROXIES", "FLASHCONTROL_MTLS_IDENTITIES",
             "FLASHCONTROL_ENROLL_NETWORKS",
+            "FLASHCONTROL_LDAP_SERVER_URI", "FLASHCONTROL_LDAP_START_TLS",
+            "FLASHCONTROL_LDAP_TLS_CERT_POLICY", "FLASHCONTROL_LDAP_BASE_DN",
+            "FLASHCONTROL_LDAP_DOMAIN_NAME", "FLASHCONTROL_LDAP_GROUP_PARENT_DN",
+            "FLASHCONTROL_LDAP_ACCESS_GROUP", "FLASHCONTROL_LDAP_ADMIN_GROUPS",
+            "FLASHCONTROL_LDAP_SECURITY_GROUPS", "FLASHCONTROL_LDAP_AUDITOR_GROUPS",
+            "FLASHCONTROL_LDAP_DEFAULT_ROLE",
         ):
             environment.pop(name, None)
         environment.update(values)
@@ -62,6 +68,36 @@ class ProductionConfigurationTests(unittest.TestCase):
             FLASHCONTROL_MTLS_IDENTITIES='{"aabb":"agent:11111111-1111-1111-1111-111111111111"}',
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_production_accepts_ldap_directory_settings(self):
+        result = self.run_config(
+            FLASHCONTROL_ENVIRONMENT="production",
+            FLASHCONTROL_DATABASE_URL="postgresql+psycopg://example",
+            FLASHCONTROL_MACHINE_AUTH_MODE="mtls",
+            FLASHCONTROL_TRUSTED_MTLS_PROXIES="127.0.0.1/32",
+            FLASHCONTROL_MTLS_IDENTITIES='{"aabb":"agent:11111111-1111-1111-1111-111111111111"}',
+            FLASHCONTROL_LDAP_SERVER_URI="ldap://dc.example.local",
+            FLASHCONTROL_LDAP_BASE_DN="DC=example,DC=local",
+            FLASHCONTROL_LDAP_DOMAIN_NAME="EXAMPLE",
+            FLASHCONTROL_LDAP_ACCESS_GROUP="FlashControl",
+            FLASHCONTROL_LDAP_ADMIN_GROUPS="FlashControl-Admins",
+            FLASHCONTROL_LDAP_SECURITY_GROUPS="FlashControl-Security",
+            FLASHCONTROL_LDAP_AUDITOR_GROUPS="FlashControl-Auditors",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_ldap_uri_requires_group_mapping(self):
+        result = self.run_config(
+            FLASHCONTROL_ENVIRONMENT="development",
+            FLASHCONTROL_DATABASE_URL="sqlite:///./flashcontrol-dev.db",
+            FLASHCONTROL_MACHINE_AUTH_MODE="token",
+            FLASHCONTROL_DEV_MACHINE_TOKEN="development-machine-token",
+            FLASHCONTROL_LDAP_SERVER_URI="ldap://dc.example.local",
+            FLASHCONTROL_LDAP_BASE_DN="DC=example,DC=local",
+            FLASHCONTROL_LDAP_DOMAIN_NAME="EXAMPLE",
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("LDAP requires at least one group mapping", result.stderr)
 
 
 if __name__ == "__main__":

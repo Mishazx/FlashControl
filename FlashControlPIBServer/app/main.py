@@ -8,16 +8,16 @@ from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import ValidationError
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from .db import engine, get_db, initialize_database
-from .auth import AuthContext, optional_auth_context, router as auth_router
+from .auth import AuthContext, audit, optional_auth_context, require_csrf, router as auth_router
 from .config import ENVIRONMENT
 from .enroll import issue_agent_token
 from .identity import register_computer, resolve_identity
 from .machine_auth import MachinePrincipal, require_machine
-from .models import Agent, Computer, Observation
+from .models import Agent, Computer, IdentityDecision, MediaState, Observation, PhysicalDevice
 from .read_api import router as read_router
 from .schemas import AgentEnrollIn, AgentEnrollOut, AgentHeartbeatIn, IngestResult, ObservationIn
 
@@ -160,11 +160,73 @@ def observation_values(
     }
 
 
+def delete_observation_record(db: Session, observation: Observation, prune_device: bool) -> dict[str, int]:
+    deleted_decisions = 0
+    deleted_media_states = 0
+    deleted_devices = 0
+
+    decision = db.scalar(
+        select(IdentityDecision).where(IdentityDecision.observation_id == observation.id)
+    )
+    if decision is not None:
+        db.delete(decision)
+        deleted_decisions = 1
+
+    media_state_id = observation.media_state_id
+    physical_device_id = observation.physical_device_id
+    db.delete(observation)
+    db.flush()
+
+    if media_state_id is not None:
+        media_state = db.get(MediaState, media_state_id)
+        if media_state is not None:
+            remaining = db.scalar(
+                select(func.count())
+                .select_from(Observation)
+                .where(Observation.media_state_id == media_state_id)
+            ) or 0
+            if remaining == 0:
+                db.delete(media_state)
+                deleted_media_states += 1
+
+    if prune_device and physical_device_id is not None:
+        physical_device = db.get(PhysicalDevice, physical_device_id)
+        if physical_device is not None:
+            remaining = db.scalar(
+                select(func.count())
+                .select_from(Observation)
+                .where(Observation.physical_device_id == physical_device_id)
+            ) or 0
+            if remaining == 0:
+                for media_state in list(db.scalars(
+                    select(MediaState).where(MediaState.physical_device_id == physical_device_id)
+                )):
+                    db.delete(media_state)
+                    deleted_media_states += 1
+                db.delete(physical_device)
+                deleted_devices = 1
+
+    return {
+        "deleted_observations": 1,
+        "deleted_decisions": deleted_decisions,
+        "deleted_media_states": deleted_media_states,
+        "deleted_devices": deleted_devices,
+    }
+
+
 def require_ingest_machine(
     request: Request,
     db: Session = Depends(get_db),
 ) -> MachinePrincipal:
     return require_machine(request, db)
+
+
+def require_management_context(
+    context: AuthContext = Depends(require_csrf),
+) -> AuthContext:
+    if context.user.role not in ("admin", "security"):
+        raise HTTPException(status_code=403, detail="insufficient role")
+    return context
 
 
 @app.get("/health/live")
@@ -262,6 +324,12 @@ def ingest_observations(
                 select(Observation).where(Observation.event_id == inserted)
             )
             register_computer(db, observation)
+            # An accepted direct-agent observation is authoritative evidence
+            # of its computer, even before the next heartbeat arrives.
+            if source_proxy_id is None:
+                agent = db.get(Agent, source_agent_id)
+                if agent is not None:
+                    agent.computer_id = observation.computer_id
             resolve_identity(db, observation)
     db.commit()
 
@@ -272,3 +340,71 @@ def ingest_observations(
         duplicates=len(observations) - accepted,
         event_ids=accepted_ids,
     )
+
+
+@app.delete("/api/v1/observations/{event_id}")
+def delete_observation(
+    event_id: uuid.UUID,
+    request: Request,
+    context: AuthContext = Depends(require_management_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    observation = db.scalar(select(Observation).where(Observation.event_id == event_id))
+    if observation is None:
+        raise HTTPException(status_code=404, detail="observation not found")
+    details = delete_observation_record(db, observation, prune_device=True)
+    audit(
+        db,
+        request,
+        "inventory.delete_observation",
+        True,
+        user=context.user,
+        details={"event_id": str(event_id), **details},
+    )
+    db.commit()
+    return {"status": "deleted", **details}
+
+
+@app.delete("/api/v1/devices/{device_id}")
+def delete_device(
+    device_id: uuid.UUID,
+    request: Request,
+    context: AuthContext = Depends(require_management_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    device = db.get(PhysicalDevice, device_id)
+    if device is None:
+        raise HTTPException(status_code=404, detail="physical device not found")
+
+    observations = list(db.scalars(
+        select(Observation).where(Observation.physical_device_id == device.id)
+    ))
+    totals = {
+        "deleted_observations": 0,
+        "deleted_decisions": 0,
+        "deleted_media_states": 0,
+        "deleted_devices": 0,
+    }
+    for observation in observations:
+        result = delete_observation_record(db, observation, prune_device=False)
+        for key, value in result.items():
+            totals[key] += value
+
+    for media_state in list(db.scalars(
+        select(MediaState).where(MediaState.physical_device_id == device.id)
+    )):
+        db.delete(media_state)
+        totals["deleted_media_states"] += 1
+
+    db.delete(device)
+    totals["deleted_devices"] = 1
+    audit(
+        db,
+        request,
+        "inventory.delete_device",
+        True,
+        user=context.user,
+        details={"device_id": str(device_id), **totals},
+    )
+    db.commit()
+    return {"status": "deleted", **totals}

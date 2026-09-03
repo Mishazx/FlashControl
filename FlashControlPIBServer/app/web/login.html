@@ -12,14 +12,14 @@
 <body class="login-page">
   <main class="login-card">
     <div class="login-brand"><span class="brand-mark">FC</span><div><strong>FlashControl</strong><small>SECURITY CONSOLE</small></div></div>
-    <div class="login-copy"><p class="eyebrow">DEV AUTHENTICATION</p><h1>Вход в систему аудита</h1><p>Используйте локальную учётную запись среды разработки.</p></div>
+    <div class="login-copy"><p class="eyebrow">DIRECTORY AUTHENTICATION</p><h1>Вход в систему аудита</h1><p>Войдите доменной учёткой Active Directory. В разработке также принимается локальная учётка.</p></div>
     <form id="login-form">
       <label>Имя пользователя<input class="field" id="username" name="username" autocomplete="username" required autofocus maxlength="128"></label>
       <label>Пароль<input class="field" id="password" name="password" type="password" autocomplete="current-password" required maxlength="1024"></label>
       <p class="login-error" id="login-error" role="alert" hidden></p>
       <button class="button login-submit" type="submit">Войти</button>
     </form>
-    <p class="login-note">Production использует только корпоративный Identity Provider.</p>
+    <p class="login-note">В production вход идёт через Active Directory: доменный логин, проверка группы доступа и роль из групп AD.</p>
   </main>
   <script src="/static/login.js" defer></script>
 </body>

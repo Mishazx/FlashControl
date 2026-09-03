@@ -94,7 +94,7 @@ therefore works inside an isolated network.
 
 ## Authentication and roles
 
-Development uses local users with salted `scrypt` password hashes. There is no
+Development accepts local users with salted `scrypt` password hashes. There is no
 default password. Create the first account interactively:
 
 ```powershell
@@ -112,11 +112,17 @@ Available roles:
 - `security`: read audit data and administrative audit log;
 - `auditor`: read-only USB audit data without the administrative audit log.
 
-Production rejects SQLite. Authentication is local user management with salted `scrypt` hashes and the same session/CSRF flow in every environment. Create the first account interactively:
+Production login follows the PIB Portal Active Directory flow: one LDAP bind as
+`DOMAIN\sAMAccountName`, optional membership in `FLASHCONTROL_LDAP_ACCESS_GROUP`,
+then a role from `memberOf`. Mapped groups are
+`FLASHCONTROL_LDAP_ADMIN_GROUPS`, `FLASHCONTROL_LDAP_SECURITY_GROUPS` and
+`FLASHCONTROL_LDAP_AUDITOR_GROUPS`. The first matching role wins (`admin`, then
+`security`, then `auditor`). Directory users are created on first successful
+login and do not store the AD password.
 
-```powershell
-python -m app.manage_user create --username admin --role admin
-```
+If `FLASHCONTROL_LDAP_SERVER_URI` is unset, the same local username/password
+login remains available. When LDAP is configured in production, local passwords
+are not accepted.
 
 ## Agent heartbeat
 

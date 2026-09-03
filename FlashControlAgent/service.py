@@ -25,7 +25,6 @@ from heartbeat import (
     delivery_credentials_configured,
     enroll_url,
     heartbeat_url,
-    host_from_observation,
     load_or_create_agent_id,
     persist_secret,
 )
@@ -439,7 +438,6 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
         device_scan_at = None
         device_notification_scan = False
         device_cache = {}
-        last_host = {}
         self.register_device_notifications()
         try:
             while True:
@@ -453,7 +451,6 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
                     try:
                         self.logger.info("collection cycle started")
                         payload = capture_collector_json(collector_args)
-                        last_host = host_from_observation(payload)
                         document = json.loads(payload)
                         if device_notification_scan:
                             event_payload = device_change_payload(document, device_cache)
@@ -498,7 +495,7 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
                         issued = enroll_with_collector(
                             target_enroll_url,
                             build_enroll_payload(
-                                agent_id, collector.PROBE_VERSION, last_host or None
+                                agent_id, collector.PROBE_VERSION, collector.host_info()
                             ),
                             timeout_seconds,
                             transport_ssl_context,
@@ -532,7 +529,8 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
                     try:
                         import main as collector
                         heartbeat_payload = build_heartbeat(
-                            agent_id, collector.PROBE_VERSION, queue.count(), last_host,
+                            agent_id, collector.PROBE_VERSION, queue.count(),
+                            collector.host_info(),
                             "direct", None,
                         )
                         heartbeat_status, _heartbeat_body = post_json(

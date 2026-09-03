@@ -86,19 +86,10 @@ def observation_event_id(observation):
 def device_label(observation):
     device = observation.get("device") or {}
     storage = device.get("storage") or {}
-    volumes = device.get("volumes") or []
-    letters = []
-    for volume in volumes:
-        if not isinstance(volume, dict):
-            continue
-        for letter in volume.get("letters") or volume.get("drive_letters") or []:
-            if letter and letter not in letters:
-                letters.append(letter)
     vendor = device.get("vendor") or storage.get("vendor") or "?"
     product = device.get("product") or storage.get("product") or "?"
     serial = device.get("serial") or storage.get("serial") or "?"
-    letter_text = ",".join(letters) if letters else "-"
-    return "%s %s serial=%s letters=%s" % (vendor, product, serial, letter_text)
+    return "%s %s serial=%s" % (vendor, product, serial)
 
 
 def write_text(path, text):

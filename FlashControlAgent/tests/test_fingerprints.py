@@ -229,7 +229,11 @@ class ObservationAndCapabilityTests(unittest.TestCase):
 
         observation = probe.build_observation(
             record,
-            host={"hostname": "host"},
+            host={
+                "hostname": "host",
+                "ip_addresses": ["10.0.0.1"],
+                "workgroup_name": "WORKGROUP",
+            },
             session={
                 "sid": "S-1-5-21-123",
                 "username": "mihail",
@@ -244,12 +248,13 @@ class ObservationAndCapabilityTests(unittest.TestCase):
         self.assertEqual(record["pnp"]["nodes"], original_nodes)
         self.assertEqual(record["layout"]["partitions"], original_partitions)
         self.assertEqual(observation["event"]["type"], "snapshot")
+        self.assertEqual(observation["host"], {"hostname": "host"})
         self.assertEqual(observation["hashes"], {
             "hardware_stable": "aa" * 32,
-            "pnp": "bb" * 32,
             "media_identity": "cc" * 32,
             "media_state": "dd" * 32,
         })
+        self.assertNotIn("pnp", observation["hashes"])
         self.assertNotIn("hardware_stable_sha256", device)
         self.assertNotIn("pnp", device)
         self.assertNotIn("path", device)
@@ -272,8 +277,10 @@ class ObservationAndCapabilityTests(unittest.TestCase):
             "sid": "S-1-5-21-123",
         })
         self.assertNotIn("collector_errors", observation)
-        self.assertEqual(device["volumes"][0]["letters"], ["D:"])
+        self.assertEqual(device["volumes"][0]["filesystem"], "exFAT")
         self.assertEqual(device["volumes"][0]["serial"], "ABCD1234")
+        self.assertNotIn("letters", device["volumes"][0])
+        self.assertNotIn("label", device["volumes"][0])
         self.assertNotIn("volume_guid", device["volumes"][0])
         self.assertNotIn("mount_paths", device["volumes"][0])
 

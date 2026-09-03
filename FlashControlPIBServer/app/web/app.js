@@ -30,6 +30,23 @@ const confidenceLabels = {
   unknown: "Неизвестно",
 };
 
+const confidenceColumnHint = "Насколько система уверена, что это то же физическое устройство, а не похожая флешка с тем же серийником.";
+
+const identityConfidenceHints = {
+  high: "Высокая: железо и разметка совпали на том же компьютере, наблюдения склеены в одно устройство.",
+  likely: "Вероятная: признаки похожи, но автоматически не склеивается — например, то же железо на другом ПК.",
+  unknown: "Неизвестно: первое появление устройства или слишком мало совпадений.",
+};
+
+const decisionConfidenceHints = {
+  SAME: "95%: то же железо, та же разметка и тот же компьютер.",
+  LIKELY_SAME: "80%: то же железо и разметка, но другой компьютер.",
+  UNKNOWN: "45%: железо совпало, разметка другая или отсутствует.",
+  CLONE_SUSPECTED: "20%: разметка та же, железо другое — возможен клон.",
+  SERIAL_COLLISION: "5%: серийник совпал, железо другое.",
+  DIFFERENT: "0%: железо не совпало.",
+};
+
 const agentStatusLabels = {
   online: "Онлайн",
   offline: "Офлайн",
@@ -68,6 +85,11 @@ function esc(value) {
   })[char]);
 }
 
+function csrfToken() {
+  const item = document.cookie.split("; ").find(value => value.startsWith("flashcontrol_csrf="));
+  return item ? decodeURIComponent(item.split("=").slice(1).join("=")) : "";
+}
+
 function formatDate(value) {
   if (!value) return "—";
   const date = new Date(value);
@@ -85,12 +107,25 @@ function badge(value) {
   return `<span class="badge ${kind}">${esc(translate(value, identityResultLabels))}</span>`;
 }
 
-async function api(path, params = {}) {
+function canManageCleanup() {
+  return ["admin", "security"].includes(currentUser?.role);
+}
+
+async function apiRequest(path, { method = "GET", params = {}, body, headers = {} } = {}) {
   const url = new URL(API + path, window.location.origin);
   Object.entries(params).forEach(([key, value]) => {
     if (value !== "" && value !== null && value !== undefined) url.searchParams.set(key, value);
   });
-  const response = await fetch(url, { headers: { Accept: "application/json" } });
+  const requestHeaders = { Accept: "application/json", ...headers };
+  const options = { method, headers: requestHeaders };
+  if (method !== "GET") {
+    requestHeaders["X-CSRF-Token"] = csrfToken();
+  }
+  if (body !== undefined) {
+    requestHeaders["Content-Type"] = "application/json";
+    options.body = typeof body === "string" ? body : JSON.stringify(body);
+  }
+  const response = await fetch(url, options);
   if (response.status === 401) {
     window.location.assign("/login");
     throw new Error("Требуется вход");
@@ -101,6 +136,16 @@ async function api(path, params = {}) {
     throw new Error(detail);
   }
   return response.json();
+}
+
+async function api(path, params = {}) {
+  return apiRequest(path, { params });
+}
+
+async function destructiveAction(path, message) {
+  if (!window.confirm(message)) return false;
+  await apiRequest(path, { method: "DELETE" });
+  return true;
 }
 
 function loading() {
@@ -115,8 +160,31 @@ function showError(error) {
   setTimeout(() => { toast.hidden = true; }, 5000);
 }
 
+function hintAttr(text) {
+  return text ? ` class="hint" title="${esc(text)}"` : "";
+}
+
+function confidenceBadge(level) {
+  const kind = level === "high" ? "same" : level === "likely" ? "info" : "warning";
+  const hint = identityConfidenceHints[level] || identityConfidenceHints.unknown;
+  return `<span class="badge ${kind} hint" title="${esc(hint)}">${esc(translate(level, confidenceLabels))}</span>`;
+}
+
+function decisionConfidence(result, confidence) {
+  const percent = confidence != null ? `${Math.round(confidence * 100)}%` : "—";
+  const hint = decisionConfidenceHints[result] || confidenceColumnHint;
+  return `<span class="hint" title="${esc(hint)}">${esc(percent)}</span>`;
+}
+
+function headerCell(header) {
+  if (header && typeof header === "object") {
+    return `<th${hintAttr(header.title)}>${esc(header.label)}</th>`;
+  }
+  return `<th>${esc(header)}</th>`;
+}
+
 function panelTable(headers, rows, emptyText = "Данных пока нет") {
-  return `<div class="panel"><div class="table-wrap"><table><thead><tr>${headers.map(x => `<th>${esc(x)}</th>`).join("")}</tr></thead><tbody>${rows || `<tr><td colspan="${headers.length}" class="empty">${esc(emptyText)}</td></tr>`}</tbody></table></div></div>`;
+  return `<div class="panel"><div class="table-wrap"><table><thead><tr>${headers.map(headerCell).join("")}</tr></thead><tbody>${rows || `<tr><td colspan="${headers.length}" class="empty">${esc(emptyText)}</td></tr>`}</tbody></table></div></div>`;
 }
 
 function pagination(data) {
@@ -154,8 +222,8 @@ async function renderDashboard() {
 
 async function renderDevices() {
   const data = await api("/devices", { limit: state.limit, offset: state.offset, status: state.filters.status, hardware_hash: state.filters.hash });
-  const rows = data.items.map(item => `<tr class="clickable" data-device="${esc(item.id)}"><td><span class="primary">${esc([item.vendor, item.product].filter(Boolean).join(" ") || "Неизвестное устройство")}</span><span class="secondary mono">${esc(item.id)}</span></td><td>${item.vid || item.pid ? `${esc(item.vid)}:${esc(item.pid)}` : "—"}</td><td class="mono">${esc(item.storage_serial)}</td><td>${shortHash(item.hardware_stable_sha256)}</td><td><span class="badge ${item.identity_confidence === "high" ? "same" : item.identity_confidence === "likely" ? "info" : "warning"}">${esc(translate(item.identity_confidence, confidenceLabels))}</span></td><td>${formatDate(item.last_seen_at)}</td></tr>`).join("");
-  content.innerHTML = `<div class="toolbar"><input class="field search" id="device-hash" placeholder="Полный hardware hash" value="${esc(state.filters.hash || "")}"><select class="field" id="device-status"><option value="">Все статусы</option><option value="provisional" ${state.filters.status === "provisional" ? "selected" : ""}>${esc(translate("provisional", deviceStatusLabels))}</option></select><button class="button" id="device-filter">Применить</button></div>${panelTable(["Устройство", "VID:PID", "Storage serial", "Hardware hash", "Confidence", "Последнее наблюдение"], rows)}${pagination(data)}`;
+  const rows = data.items.map(item => `<tr class="clickable" data-device="${esc(item.id)}"><td><span class="primary">${esc([item.vendor, item.product].filter(Boolean).join(" ") || "Неизвестное устройство")}</span><span class="secondary mono">${esc(item.id)}</span></td><td>${item.vid || item.pid ? `${esc(item.vid)}:${esc(item.pid)}` : "—"}</td><td class="mono">${esc(item.storage_serial)}</td><td>${shortHash(item.hardware_stable_sha256)}</td><td>${confidenceBadge(item.identity_confidence)}</td><td>${formatDate(item.last_seen_at)}</td></tr>`).join("");
+  content.innerHTML = `<div class="toolbar"><input class="field search" id="device-hash" placeholder="Полный hardware hash" value="${esc(state.filters.hash || "")}"><select class="field" id="device-status"><option value="">Все статусы</option><option value="provisional" ${state.filters.status === "provisional" ? "selected" : ""}>${esc(translate("provisional", deviceStatusLabels))}</option></select><button class="button" id="device-filter">Применить</button></div>${panelTable(["Устройство", "VID:PID", "Storage serial", "Hardware hash", { label: "Confidence", title: confidenceColumnHint }, "Последнее наблюдение"], rows)}${pagination(data)}`;
   document.getElementById("device-filter").onclick = () => { state.filters = { hash: document.getElementById("device-hash").value.trim(), status: document.getElementById("device-status").value }; state.offset = 0; render(); };
   bindRows(); bindPagination();
 }
@@ -184,8 +252,8 @@ async function renderEvents() {
 
 async function renderAlerts() {
   const data = await api("/identity-alerts", { limit: state.limit, offset: state.offset });
-  const rows = data.items.map(item => `<tr class="clickable" data-event="${esc(item.event_id)}"><td>${badge(item.result)}</td><td>${formatDate(item.observed_at_utc)}</td><td>${esc(item.hostname)}</td><td>${esc((item.reasons || []).join(", "))}</td><td>${Math.round(item.confidence * 100)}%</td><td class="mono">${esc(item.candidate_physical_device_id)}</td></tr>`).join("");
-  content.innerHTML = `${panelTable(["Тип", "Время", "Компьютер", "Основания", "Confidence", "Кандидат"], rows, "Коллизий и подозрений на клон нет")}${pagination(data)}`;
+  const rows = data.items.map(item => `<tr class="clickable" data-event="${esc(item.event_id)}"><td>${badge(item.result)}</td><td>${formatDate(item.observed_at_utc)}</td><td>${esc(item.hostname)}</td><td>${esc((item.reasons || []).join(", "))}</td><td>${decisionConfidence(item.result, item.confidence)}</td><td class="mono">${esc(item.candidate_physical_device_id)}</td></tr>`).join("");
+  content.innerHTML = `${panelTable(["Тип", "Время", "Компьютер", "Основания", { label: "Confidence", title: confidenceColumnHint }, "Кандидат"], rows, "Коллизий и подозрений на клон нет")}${pagination(data)}`;
   bindRows(); bindPagination();
 }
 
@@ -197,8 +265,8 @@ async function renderAudit() {
   bindPagination();
 }
 
-function detailItem(label, value, wide = false, mono = false) {
-  return `<div class="detail-item ${wide ? "wide" : ""}"><label>${esc(label)}</label><div class="${mono ? "mono" : ""}">${esc(value)}</div></div>`;
+function detailItem(label, value, wide = false, mono = false, title = "") {
+  return `<div class="detail-item ${wide ? "wide" : ""}"><label${hintAttr(title)}>${esc(label)}</label><div class="${mono ? "mono" : ""}">${esc(value)}</div></div>`;
 }
 
 async function openDevice(id) {
@@ -208,8 +276,21 @@ async function openDevice(id) {
     const title = [item.vendor, item.product].filter(Boolean).join(" ") || "Неизвестное устройство";
     const media = (item.media_states || []).map(x => `<div class="detail-item wide"><label>MEDIA STATE · ${formatDate(x.last_seen_at)}</label><div class="mono">identity ${esc(x.media_identity_sha256)}<br>state ${esc(x.media_state_sha256)}</div></div>`).join("");
     const computers = (item.used_on_computers || []).map(x => `<span class="badge info">${esc(x.hostname)}</span>`).join(" ") || "—";
+    const actions = canManageCleanup() ? '<div class="drawer-actions"><button class="button danger" id="delete-device">Удалить устройство</button></div>' : "";
     document.getElementById("drawer-title").textContent = title;
-    document.getElementById("drawer-body").innerHTML = `<div class="detail-grid">${detailItem("Physical Device ID", item.id, true, true)}${detailItem("Статус", translate(item.status, deviceStatusLabels))}${detailItem("Confidence", translate(item.identity_confidence, confidenceLabels))}${detailItem("VID:PID", item.vid || item.pid ? `${item.vid}:${item.pid}` : "—")}${detailItem("Storage serial", item.storage_serial, false, true)}${detailItem("Hardware hash", item.hardware_stable_sha256, true, true)}<div class="detail-item wide"><label>Использовалась на ПК</label><div>${computers}</div></div>${detailItem("SID пользователей", (item.seen_user_sids || []).join(", "), true, true)}</div><h3 class="section-title">MEDIA STATES (${item.media_states.length})</h3><div class="detail-grid">${media || '<div class="empty">Нет данных</div>'}</div><h3 class="section-title">ИСХОДНЫЕ ПРИЗНАКИ</h3><pre class="json">${esc(JSON.stringify(item.representative_device, null, 2))}</pre>`;
+    document.getElementById("drawer-body").innerHTML = `${actions}<div class="detail-grid">${detailItem("Physical Device ID", item.id, true, true)}${detailItem("Статус", translate(item.status, deviceStatusLabels))}${detailItem("Confidence", translate(item.identity_confidence, confidenceLabels), false, false, identityConfidenceHints[item.identity_confidence] || confidenceColumnHint)}${detailItem("VID:PID", item.vid || item.pid ? `${item.vid}:${item.pid}` : "—")}${detailItem("Storage serial", item.storage_serial, false, true)}${detailItem("Hardware hash", item.hardware_stable_sha256, true, true)}<div class="detail-item wide"><label>Использовалась на ПК</label><div>${computers}</div></div>${detailItem("SID пользователей", (item.seen_user_sids || []).join(", "), true, true)}</div><h3 class="section-title">MEDIA STATES (${item.media_states.length})</h3><div class="detail-grid">${media || '<div class="empty">Нет данных</div>'}</div><h3 class="section-title">ИСХОДНЫЕ ПРИЗНАКИ</h3><pre class="json">${esc(JSON.stringify(item.representative_device, null, 2))}</pre>`;
+    const deleteButton = document.getElementById("delete-device");
+    if (deleteButton) {
+      deleteButton.onclick = async () => {
+        try {
+          if (!await destructiveAction(`/devices/${id}`, "Удалить USB-устройство и все связанные с ним события?")) return;
+          closeDrawer();
+          await render();
+        } catch (error) {
+          showError(error);
+        }
+      };
+    }
   } catch (error) { document.getElementById("drawer-body").innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
 }
 
@@ -231,7 +312,20 @@ async function openEvent(id) {
     const item = await api(`/observations/${id}`);
     document.getElementById("drawer-title").textContent = item.hostname || "Observation";
     const decision = item.identity_decision || {};
-    document.getElementById("drawer-body").innerHTML = `<div class="detail-grid">${detailItem("Event ID", item.event_id, true, true)}${detailItem("Время", formatDate(item.observed_at_utc))}${detailItem("Тип", translate(item.event_type, eventTypeLabels))}${detailItem("Решение", translate(decision.result, identityResultLabels))}${detailItem("Confidence", decision.confidence != null ? `${Math.round(decision.confidence * 100)}%` : "—")}${detailItem("Physical Device ID", item.physical_device_id, true, true)}${detailItem("Основания", (decision.reasons || []).join(", "), true)}</div><h3 class="section-title">RAW OBSERVATION</h3><pre class="json">${esc(JSON.stringify(item.raw_observation, null, 2))}</pre>`;
+    const actions = canManageCleanup() ? '<div class="drawer-actions"><button class="button danger" id="delete-event">Удалить событие</button></div>' : "";
+    document.getElementById("drawer-body").innerHTML = `${actions}<div class="detail-grid">${detailItem("Event ID", item.event_id, true, true)}${detailItem("Время", formatDate(item.observed_at_utc))}${detailItem("Тип", translate(item.event_type, eventTypeLabels))}${detailItem("Решение", translate(decision.result, identityResultLabels))}${detailItem("Confidence", decision.confidence != null ? `${Math.round(decision.confidence * 100)}%` : "—", false, false, decisionConfidenceHints[decision.result] || confidenceColumnHint)}${detailItem("Physical Device ID", item.physical_device_id, true, true)}${detailItem("Основания", (decision.reasons || []).join(", "), true)}</div><h3 class="section-title">RAW OBSERVATION</h3><pre class="json">${esc(JSON.stringify(item.raw_observation, null, 2))}</pre>`;
+    const deleteButton = document.getElementById("delete-event");
+    if (deleteButton) {
+      deleteButton.onclick = async () => {
+        try {
+          if (!await destructiveAction(`/observations/${id}`, "Удалить событие наблюдения?")) return;
+          closeDrawer();
+          await render();
+        } catch (error) {
+          showError(error);
+        }
+      };
+    }
   } catch (error) { document.getElementById("drawer-body").innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
 }
 

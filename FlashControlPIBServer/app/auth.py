@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from .config import ENVIRONMENT, SESSION_HOURS
 from .db import get_db
+from .ldap_auth import ldap_configured, perform_ldap_login, sam_account_name
 from .machine_auth import client_host
 from .models import AuditLog, AuthSession, AuthUser
 
@@ -58,10 +59,31 @@ def as_utc(value: datetime.datetime) -> datetime.datetime:
 
 
 def normalize_username(value: str) -> str:
-    username = value.strip().lower()
+    username = sam_account_name(value).lower()
     if not username or len(username) > 128:
         raise ValueError("invalid username")
     return username
+
+
+def upsert_directory_user(db: Session, username: str, role: str) -> AuthUser:
+    if role not in ALLOWED_ROLES:
+        raise ValueError("role must be one of: %s" % ", ".join(ALLOWED_ROLES))
+    user = db.scalar(select(AuthUser).where(AuthUser.username == username))
+    if user is None:
+        user = AuthUser(
+            id=uuid.uuid4(), username=username, password_hash=None,
+            role=role, enabled=True,
+        )
+        db.add(user)
+        db.flush()
+        return user
+    user.role = role
+    return user
+
+
+def _local_password_valid(user: AuthUser | None, password: str) -> bool:
+    password_hash = user.password_hash if user and user.password_hash else DUMMY_PASSWORD_HASH
+    return bool(user and user.enabled and verify_password(password, password_hash))
 
 
 
@@ -268,19 +290,42 @@ def login(payload: LoginRequest, request: Request, response: Response,
         raise HTTPException(status_code=429, detail="too many login attempts")
 
     user = db.scalar(select(AuthUser).where(AuthUser.username == username))
-    password_hash = user.password_hash if user and user.password_hash else DUMMY_PASSWORD_HASH
-    password_valid = verify_password(payload.password, password_hash)
-    valid = bool(user and user.enabled and password_valid)
-    if not valid:
-        audit(db, request, "auth.login", False, username=username, details={"reason": "invalid_credentials"})
+    allow_local = ENVIRONMENT != "production" or not ldap_configured()
+    if allow_local and _local_password_valid(user, payload.password):
+        token, csrf_token = _create_session(db, request, user)
+        audit(db, request, "auth.login", True, user=user, details={"role": user.role, "method": "local"})
         db.commit()
-        raise HTTPException(status_code=401, detail="invalid username or password")
+        _set_auth_cookies(response, token, csrf_token)
+        return {"username": user.username, "role": user.role}
 
-    token, csrf_token = _create_session(db, request, user)
-    audit(db, request, "auth.login", True, user=user, details={"role": user.role})
+    if ldap_configured():
+        outcome = perform_ldap_login(username, payload.password)
+        if outcome.success and outcome.role:
+            directory_user = upsert_directory_user(db, outcome.username.lower(), outcome.role)
+            if not directory_user.enabled:
+                audit(db, request, "auth.login", False, username=username, details={"reason": "disabled"})
+                db.commit()
+                raise HTTPException(status_code=401, detail="invalid username or password")
+            token, csrf_token = _create_session(db, request, directory_user)
+            audit(
+                db, request, "auth.login", True, user=directory_user,
+                details={"role": directory_user.role, "method": "ldap"},
+            )
+            db.commit()
+            _set_auth_cookies(response, token, csrf_token)
+            return {"username": directory_user.username, "role": directory_user.role}
+        if outcome.failure == "not_in_group":
+            audit(db, request, "auth.login", False, username=username, details={"reason": "not_in_group"})
+            db.commit()
+            raise HTTPException(status_code=403, detail="user is not allowed to access FlashControl")
+        if outcome.failure in ("ldap_unavailable", "ldap_error") and ENVIRONMENT == "production":
+            audit(db, request, "auth.login", False, username=username, details={"reason": outcome.failure})
+            db.commit()
+            raise HTTPException(status_code=503, detail="directory is unavailable")
+
+    audit(db, request, "auth.login", False, username=username, details={"reason": "invalid_credentials"})
     db.commit()
-    _set_auth_cookies(response, token, csrf_token)
-    return {"username": user.username, "role": user.role}
+    raise HTTPException(status_code=401, detail="invalid username or password")
 
 
 @router.get("/me")

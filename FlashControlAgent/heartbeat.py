@@ -152,11 +152,17 @@ def build_heartbeat(agent_id, agent_version, queue_size, host=None,
                 value = address.get("address") or address.get("ip")
                 if value and value not in current_ips:
                     current_ips.append(value)
+    hostname = host.get("hostname") or os.environ.get("COMPUTERNAME") or "unknown"
+    domain = host.get("domain_name") or host.get("domain") or os.environ.get("USERDOMAIN")
+    # Workgroup machines often expose COMPUTERNAME as USERDOMAIN.  It is not
+    # an AD domain and must match the Observation's null domain.
+    if domain and str(domain).strip().lower() == str(hostname).strip().lower():
+        domain = None
     return {
         "agent_id": agent_id,
         "agent_version": agent_version,
-        "hostname": host.get("hostname") or os.environ.get("COMPUTERNAME") or "unknown",
-        "domain": host.get("domain_name") or host.get("domain") or os.environ.get("USERDOMAIN"),
+        "hostname": hostname,
+        "domain": domain,
         "current_ips": current_ips,
         "queue_size": max(0, int(queue_size)),
         "selected_route": selected_route,
