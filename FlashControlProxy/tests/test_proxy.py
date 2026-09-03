@@ -88,6 +88,27 @@ class ProxyApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 401)
 
+    def test_agent_can_enroll_and_use_issued_token(self):
+        agent_id = uuid.uuid4()
+        enrolled = self.client.post(
+            "/api/v1/agents/enroll",
+            json={
+                "agent_id": str(agent_id),
+                "agent_version": "0.4.0",
+                "hostname": "proxy-pc",
+                "current_ips": ["127.0.0.1"],
+            },
+        )
+        self.assertEqual(enrolled.status_code, 200)
+        headers = {
+            "X-FlashControl-Machine-ID": str(agent_id),
+            "X-FlashControl-Machine-Kind": "agent",
+            "X-FlashControl-Machine-Token": enrolled.json()["machine_token"],
+        }
+        payload = {"event_id": str(uuid.uuid4()), "schema_version": 1}
+        response = self.client.post("/api/v1/observations", json=payload, headers=headers)
+        self.assertEqual(response.status_code, 202)
+
 
 class ProxyForwardingTests(unittest.IsolatedAsyncioTestCase):
     async def test_forwarding_authenticates_proxy_and_acknowledges_only_success(self):

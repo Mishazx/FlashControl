@@ -5,17 +5,20 @@ from __future__ import print_function
 
 import json
 import os
+import socket
 import uuid
 
 
-def load_or_create_agent_id(path):
-    try:
-        with open(path, "r") as handle:
-            return str(uuid.UUID(handle.read().strip()))
-    except (IOError, OSError, ValueError):
-        pass
+def persist_agent_id(path, requested=None):
+    if requested:
+        value = str(uuid.UUID(str(requested).strip()))
+    else:
+        try:
+            with open(path, "r") as handle:
+                return str(uuid.UUID(handle.read().strip()))
+        except (IOError, OSError, ValueError):
+            value = str(uuid.uuid4())
 
-    value = str(uuid.uuid4())
     temporary = path + ".tmp"
     folder = os.path.dirname(os.path.abspath(path))
     if folder and not os.path.exists(folder):
@@ -28,13 +31,90 @@ def load_or_create_agent_id(path):
     return value
 
 
-def heartbeat_url(server_url, configured_url=""):
+def load_or_create_agent_id(path):
+    return persist_agent_id(path)
+
+
+def persist_secret(path, value):
+    text = str(value).strip()
+    if not text:
+        raise ValueError("secret must not be empty")
+    temporary = path + ".tmp"
+    folder = os.path.dirname(os.path.abspath(path))
+    if folder and not os.path.exists(folder):
+        os.makedirs(folder)
+    with open(temporary, "w") as handle:
+        handle.write(text + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    os.replace(temporary, path)
+    return text
+
+
+def load_secret(path):
+    try:
+        with open(path, "r") as handle:
+            value = handle.read().strip()
+        return value or ""
+    except (IOError, OSError):
+        return ""
+
+
+def delivery_credentials_configured(config):
+    config = config or {}
+    return bool(
+        (config.get("machine_token") or "").strip()
+        or (config.get("client_cert_file") or "").strip()
+        or load_secret(config.get("machine_token_file") or "")
+    )
+
+
+def current_machine_token(config):
+    config = config or {}
+    configured = (config.get("machine_token") or "").strip()
+    if configured:
+        return configured
+    return load_secret(config.get("machine_token_file") or "")
+
+
+def collector_api_url(server_url, configured_url, suffix):
     if configured_url:
         return configured_url.strip()
-    suffix = "/api/v1/observations"
-    if server_url and server_url.rstrip("/").endswith(suffix):
-        return server_url.rstrip("/")[:-len(suffix)] + "/api/v1/agents/heartbeat"
+    marker = "/api/v1/observations"
+    if server_url and server_url.rstrip("/").endswith(marker):
+        return server_url.rstrip("/")[:-len(marker)] + suffix
     return ""
+
+
+def heartbeat_url(server_url, configured_url=""):
+    return collector_api_url(server_url, configured_url, "/api/v1/agents/heartbeat")
+
+
+def enroll_url(server_url, configured_url=""):
+    return collector_api_url(server_url, configured_url, "/api/v1/agents/enroll")
+
+
+def local_host_identity():
+    hostname = os.environ.get("COMPUTERNAME") or socket.gethostname() or "unknown"
+    domain = os.environ.get("USERDOMAIN")
+    if domain and hostname and domain.strip().lower() == hostname.strip().lower():
+        domain = None
+    return {
+        "hostname": hostname,
+        "domain_name": domain,
+        "ip_addresses": [],
+    }
+
+
+def build_enroll_payload(agent_id, agent_version, host=None):
+    heartbeat = build_heartbeat(agent_id, agent_version, 0, host or local_host_identity())
+    return {
+        "agent_id": heartbeat["agent_id"],
+        "agent_version": heartbeat["agent_version"],
+        "hostname": heartbeat["hostname"],
+        "domain": heartbeat["domain"],
+        "current_ips": heartbeat["current_ips"],
+    }
 
 
 def host_from_observation(json_text):

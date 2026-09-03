@@ -12,7 +12,6 @@ CREATE TABLE IF NOT EXISTS observations (
     pnp_observation_sha256 VARCHAR(64),
     media_identity_sha256 VARCHAR(64),
     media_state_sha256 VARCHAR(64),
-    observation_sha256 VARCHAR(64),
     host JSONB NOT NULL,
     session JSONB NOT NULL,
     device JSONB NOT NULL,
@@ -27,4 +26,3 @@ CREATE INDEX IF NOT EXISTS ix_observations_observed_at ON observations (observed
 CREATE INDEX IF NOT EXISTS ix_observations_hostname ON observations (hostname);
 CREATE INDEX IF NOT EXISTS ix_observations_user_sid ON observations (user_sid);
 CREATE INDEX IF NOT EXISTS ix_observations_hardware_stable_hash ON observations (hardware_stable_sha256);
-

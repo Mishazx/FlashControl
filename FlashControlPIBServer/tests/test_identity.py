@@ -50,22 +50,5 @@ class IdentityRuleTests(unittest.TestCase):
         self.assertEqual(result.result, "UNKNOWN")
         self.assertFalse(result.auto_link)
 
-    def test_vpd83_match_requires_consistent_hardware(self):
-        device = {"vpd83": [{"value": "naa.1234"}]}
-        left = FakeObservation("hardware-a", "media-a", "computer-a", device)
-        right = FakeObservation("hardware-b", "media-a", "computer-a", device)
-        result = classify_pair(left, right)
-        self.assertNotEqual(result.result, "SAME")
-        self.assertFalse(result.auto_link)
-
-    def test_vpd83_hex_is_accepted_as_strong_identifier(self):
-        device = {"vpd83": [{"value_hex": "5000000000000001"}]}
-        left = FakeObservation("hardware-a", "media-a", "computer-a", device)
-        right = FakeObservation("hardware-a", "media-a", "computer-a", device)
-        result = classify_pair(left, right)
-        self.assertEqual(result.result, "SAME")
-        self.assertTrue(result.auto_link)
-
-
 if __name__ == "__main__":
     unittest.main()

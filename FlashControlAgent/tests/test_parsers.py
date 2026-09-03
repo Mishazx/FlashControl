@@ -10,7 +10,6 @@ from probe_support import (
     make_gpt_layout_buffer,
     make_mbr_layout_buffer,
     make_storage_descriptor,
-    make_vpd83_buffer,
     probe,
 )
 
@@ -59,71 +58,6 @@ class StorageDescriptorTests(unittest.TestCase):
 
         self.assertIsNone(error)
         self.assertIsNone(result["serial"])
-
-
-class Vpd83ParserTests(unittest.TestCase):
-    def test_query_vpd83_identifiers_parses_ascii_and_binary_values(self):
-        data = make_vpd83_buffer([
-            (1, 3, 0, b"SN1234"),
-            (1, 3, 1, b"\x00\x01\xfe\xff", 0),
-        ])
-        with patch.object(probe, "ioctl", return_value=(data, None)):
-            identifiers, error = probe.query_vpd83_identifiers(object())
-
-        self.assertIsNone(error)
-        self.assertEqual(len(identifiers), 2)
-        self.assertEqual(identifiers[0]["value_ascii"], "SN1234")
-        self.assertEqual(identifiers[0]["value_hex"], "534e31323334")
-        self.assertIsNone(identifiers[1]["value_ascii"])
-        self.assertEqual(identifiers[1]["value_hex"], "0001feff")
-
-    def test_query_vpd83_identifiers_stops_on_zero_next_offset(self):
-        data = make_vpd83_buffer([
-            (1, 3, 0, b"FIRST", 0),
-            (1, 3, 1, b"SECOND"),
-        ])
-        with patch.object(probe, "ioctl", return_value=(data, None)):
-            identifiers, error = probe.query_vpd83_identifiers(object())
-
-        self.assertIsNone(error)
-        self.assertEqual(len(identifiers), 1)
-        self.assertEqual(identifiers[0]["value_ascii"], "FIRST")
-
-    def test_query_vpd83_identifiers_handles_small_next_offset_safely(self):
-        data = make_vpd83_buffer([
-            (1, 3, 0, b"ONE", 8),
-            (1, 3, 0, b"TWO"),
-        ])
-        with patch.object(probe, "ioctl", return_value=(data, None)):
-            identifiers, error = probe.query_vpd83_identifiers(object())
-
-        self.assertIsNone(error)
-        self.assertEqual(len(identifiers), 1)
-        self.assertEqual(identifiers[0]["value_ascii"], "ONE")
-
-    def test_query_vpd83_identifiers_limits_identifier_to_buffer(self):
-        payload = bytearray(make_vpd83_buffer([(1, 3, 0, b"ABCD")]))
-        struct.pack_into("<III", payload, 0, 1, len(payload), 5)
-        struct.pack_into("<H", payload, 12 + 8, 32)
-        with patch.object(probe, "ioctl", return_value=(bytes(payload), None)):
-            identifiers, error = probe.query_vpd83_identifiers(object())
-
-        self.assertIsNone(error)
-        self.assertEqual(len(identifiers), 1)
-        self.assertEqual(identifiers[0]["value_hex"], "41424344")
-
-    def test_query_vpd83_identifiers_returns_short_buffer_error(self):
-        with patch.object(probe, "ioctl", return_value=(b"\x00" * 11, None)):
-            identifiers, error = probe.query_vpd83_identifiers(object())
-
-        self.assertEqual(identifiers, [])
-        self.assertIn("short STORAGE_DEVICE_ID_DESCRIPTOR", error)
-
-    def test_error_status_classifies_invalid_parameter_for_vpd83(self):
-        self.assertEqual(
-            probe.error_status(probe.ERROR_INVALID_PARAMETER),
-            "unsupported_or_invalid",
-        )
 
 
 class PartitionLayoutTests(unittest.TestCase):

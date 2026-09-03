@@ -1,5 +1,5 @@
-import os
 import json
+import os
 
 
 def _csv_set(name: str) -> frozenset[str]:
@@ -42,10 +42,18 @@ TRUSTED_MTLS_PROXIES = tuple(
     item.strip() for item in os.environ.get("FLASHCONTROL_TRUSTED_MTLS_PROXIES", "").split(",")
     if item.strip()
 )
+TRUSTED_PROXIES = tuple(
+    item.strip() for item in os.environ.get("FLASHCONTROL_TRUSTED_PROXIES", "").split(",")
+    if item.strip()
+) or TRUSTED_MTLS_PROXIES
 try:
     MTLS_IDENTITIES = json.loads(os.environ.get("FLASHCONTROL_MTLS_IDENTITIES", "{}"))
 except ValueError as exc:
     raise RuntimeError("FLASHCONTROL_MTLS_IDENTITIES must be valid JSON") from exc
+ENROLL_NETWORKS = tuple(
+    item.strip() for item in os.environ.get("FLASHCONTROL_ENROLL_NETWORKS", "").split(",")
+    if item.strip()
+)
 
 if ENVIRONMENT == "production" and DATABASE_URL.startswith("sqlite"):
     raise RuntimeError("SQLite is not allowed in production")

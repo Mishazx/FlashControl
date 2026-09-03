@@ -47,6 +47,21 @@ def initialize_sqlite_database(target_engine):
         connection.execute(text(
             "CREATE INDEX IF NOT EXISTS ix_observations_proxy_id ON observations (proxy_id)"
         ))
+        agent_columns = set()
+        if inspect(target_engine).has_table("agents"):
+            agent_columns = {
+                item["name"] for item in inspect(target_engine).get_columns("agents")
+            }
+        agent_additions = {
+            "token_hash": "VARCHAR(64)",
+            "enroll_source_ip": "VARCHAR(128)",
+            "enrolled_at_utc": "DATETIME",
+        }
+        for name, definition in agent_additions.items():
+            if name not in agent_columns:
+                connection.execute(text(
+                    "ALTER TABLE agents ADD COLUMN %s %s" % (name, definition)
+                ))
 
 
 def initialize_database():

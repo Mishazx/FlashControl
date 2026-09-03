@@ -97,3 +97,30 @@ class AgentHeartbeatIn(BaseModel):
         if self.selected_route != "proxy" and self.proxy_id is not None:
             raise ValueError("proxy_id is only valid for proxy route")
         return self
+
+
+class AgentEnrollIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agent_id: uuid.UUID
+    agent_version: str = Field(min_length=1, max_length=64)
+    hostname: str = Field(min_length=1, max_length=255)
+    domain: str | None = Field(default=None, max_length=255)
+    current_ips: list[str] = Field(default_factory=list, max_length=128)
+
+    @field_validator("current_ips")
+    @classmethod
+    def validate_ip_addresses(cls, values: list[str]) -> list[str]:
+        import ipaddress
+
+        result = []
+        for value in values:
+            normalized = str(ipaddress.ip_address(value))
+            if normalized not in result:
+                result.append(normalized)
+        return result
+
+
+class AgentEnrollOut(BaseModel):
+    agent_id: uuid.UUID
+    machine_token: str

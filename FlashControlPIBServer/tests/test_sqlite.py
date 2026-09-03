@@ -97,10 +97,11 @@ class SqliteApiTests(unittest.TestCase):
         self.assertEqual(second.status_code, 202)
 
         with SessionLocal() as session:
-            self.assertEqual(session.scalar(select(func.count()).select_from(Agent)), 1)
             self.assertEqual(session.get(Agent, agent_id).queue_size, 0)
 
-        listing = self.client.get("/api/v1/agents", params={"status": "online"})
+        listing = self.client.get(
+            "/api/v1/agents", params={"status": "online", "hostname": "heartbeat-host"}
+        )
         self.assertEqual(listing.status_code, 200)
         self.assertEqual(listing.json()["total"], 1)
         self.assertEqual(listing.json()["items"][0]["status"], "online")
@@ -110,6 +111,48 @@ class SqliteApiTests(unittest.TestCase):
             ).status_code,
             422,
         )
+
+    def test_agent_can_enroll_from_allowed_network_and_use_issued_token(self):
+        guest = TestClient(app)
+        agent_id = uuid.uuid4()
+        enrolled = guest.post(
+            "/api/v1/agents/enroll",
+            json={
+                "agent_id": str(agent_id),
+                "agent_version": "0.4.0",
+                "hostname": "enroll-pc",
+                "domain": "CORP",
+                "current_ips": ["10.20.30.40"],
+            },
+        )
+        self.assertEqual(enrolled.status_code, 200)
+        token = enrolled.json()["machine_token"]
+        self.assertTrue(token)
+        headers = {
+            "X-FlashControl-Machine-Token": token,
+            "X-FlashControl-Machine-ID": str(agent_id),
+            "X-FlashControl-Machine-Kind": "agent",
+        }
+        event_id = uuid.uuid4()
+        ingested = guest.post(
+            "/api/v1/observations",
+            json=observation_payload(event_id, hostname="enroll-pc"),
+            headers=headers,
+        )
+        self.assertEqual(ingested.status_code, 200)
+        self.assertEqual(ingested.json()["accepted"], 1)
+        stolen = guest.post(
+            "/api/v1/agents/enroll",
+            json={
+                "agent_id": str(agent_id),
+                "agent_version": "0.4.0",
+                "hostname": "other-pc",
+                "domain": "CORP",
+                "current_ips": ["10.20.30.41"],
+            },
+        )
+        self.assertEqual(stolen.status_code, 403)
+        guest.close()
 
     def test_web_ui_and_assets_are_served(self):
         page = self.client.get("/")
@@ -456,6 +499,35 @@ class SqliteApiTests(unittest.TestCase):
         )
         self.assertEqual(audit_response.status_code, 200)
         self.assertGreaterEqual(audit_response.json()["total"], 5)
+        guest.close()
+
+    def test_login_audit_uses_forwarded_client_ip_from_trusted_proxy(self):
+        from unittest.mock import patch
+
+        from app import machine_auth
+        from app.models import AuditLog
+
+        guest = TestClient(app, client=("172.30.0.4", 50000))
+        with patch.object(machine_auth, "TRUSTED_PROXIES", ("172.30.0.0/24",)):
+            response = guest.post(
+                "/api/v1/auth/login",
+                json={"username": "test-admin", "password": "wrong password value"},
+                headers={
+                    "X-Real-IP": "203.0.113.77",
+                    "X-Forwarded-For": "198.51.100.20, 203.0.113.77",
+                },
+            )
+        self.assertEqual(response.status_code, 401)
+        with SessionLocal() as session:
+            entry = session.scalar(
+                select(AuditLog)
+                .where(AuditLog.action == "auth.login")
+                .where(AuditLog.success.is_(False))
+                .where(AuditLog.username == "test-admin")
+                .where(AuditLog.source_ip == "203.0.113.77")
+                .order_by(AuditLog.created_at_utc.desc())
+            )
+        self.assertIsNotNone(entry)
         guest.close()
 
 

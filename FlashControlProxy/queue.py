@@ -29,6 +29,16 @@ class ProxyQueue:
                 last_error TEXT
             )
         """)
+        self.connection.execute("""
+            CREATE TABLE IF NOT EXISTS agent_tokens (
+                agent_id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL,
+                hostname TEXT,
+                domain TEXT,
+                source_ip TEXT,
+                enrolled_at REAL NOT NULL
+            )
+        """)
         self.connection.commit()
 
     def close(self):
@@ -129,3 +139,48 @@ class ProxyQueue:
     def count(self):
         with self.lock:
             return self.connection.execute("SELECT COUNT(*) FROM forward_queue").fetchone()[0]
+
+    def agent_token_matches(self, agent_id, token_hash):
+        with self.lock:
+            row = self.connection.execute(
+                "SELECT token_hash FROM agent_tokens WHERE agent_id=?",
+                (str(agent_id),),
+            ).fetchone()
+        return bool(row) and row["token_hash"] == token_hash
+
+    def issue_agent_token(self, agent_id, token_hash, hostname, domain, source_ip):
+        now = float(self.clock())
+        with self.lock, self.connection:
+            row = self.connection.execute(
+                "SELECT hostname, domain FROM agent_tokens WHERE agent_id=?",
+                (str(agent_id),),
+            ).fetchone()
+            if row is not None:
+                bound_host = (row["hostname"] or "").casefold()
+                bound_domain = (row["domain"] or "").casefold()
+                if bound_host and (
+                    bound_host != (hostname or "").casefold()
+                    or bound_domain != (domain or "").casefold()
+                ):
+                    raise ValueError("agent identity is bound to another computer")
+            self.connection.execute(
+                """
+                INSERT INTO agent_tokens
+                    (agent_id, token_hash, hostname, domain, source_ip, enrolled_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(agent_id) DO UPDATE SET
+                    token_hash=excluded.token_hash,
+                    hostname=excluded.hostname,
+                    domain=excluded.domain,
+                    source_ip=excluded.source_ip,
+                    enrolled_at=excluded.enrolled_at
+                """,
+                (
+                    str(agent_id),
+                    token_hash,
+                    hostname,
+                    domain,
+                    source_ip,
+                    now,
+                ),
+            )

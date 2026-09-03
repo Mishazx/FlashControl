@@ -9,6 +9,7 @@ import io
 import json
 import os
 import sys
+import uuid
 import urllib.error
 import urllib.request
 
@@ -133,7 +134,7 @@ def print_summary(document, out_path):
     )
     if not observations:
         sys.stderr.write(
-            "No USB flash drives found. Plug one in and run again, or use --all-disks.\n"
+            "No USB flash drives found. Plug one in and run again.\n"
         )
     for index, observation in enumerate(observations, 1):
         sys.stderr.write(
@@ -143,14 +144,28 @@ def print_summary(document, out_path):
     sys.stderr.write("Wrote %s\n" % os.path.abspath(out_path))
 
 
+def resolve_send_identity(machine_id, machine_token):
+    token = (machine_token or "").strip()
+    if not token:
+        raise RuntimeError("machine token is required to send observations")
+    value = (machine_id or "").strip()
+    if not value:
+        value = str(uuid.uuid4())
+    try:
+        return str(uuid.UUID(value)), token
+    except ValueError:
+        raise RuntimeError("machine id must be a UUID")
+
+
 def send_observations(document, server_url, timeout_seconds, machine_id, machine_token):
     observations = observations_from_document(document)
     if not observations:
         raise RuntimeError("nothing to send: collector returned no observations")
+    machine_id, machine_token = resolve_send_identity(machine_id, machine_token)
     headers = {
-        "X-FlashControl-Machine-ID": machine_id or "",
+        "X-FlashControl-Machine-ID": machine_id,
         "X-FlashControl-Machine-Kind": "agent",
-        "X-FlashControl-Machine-Token": machine_token or "",
+        "X-FlashControl-Machine-Token": machine_token,
     }
     for observation in observations:
         event_id = observation_event_id(observation) or "?"
@@ -186,21 +201,27 @@ def build_parser():
         default=None,
         help="Output JSON path (default: FlashControlAgentDump.json next to the EXE)",
     )
-    parser.add_argument("--all-disks", action="store_true", help="Include non-USB disks")
     parser.add_argument(
         "--debug",
         action="store_true",
         help="Include the full diagnostic payload (PnP tree, unused partitions, host extras)",
     )
-    parser.add_argument("--vpd80", action="store_true", help="Enable VPD page 0x80 collection")
     parser.add_argument(
         "--send",
         metavar="URL",
         default="",
         help="Also POST each observation to this URL, the same way the agent does",
     )
-    parser.add_argument("--machine-id", default="dump-test-agent")
-    parser.add_argument("--machine-token", default="")
+    parser.add_argument(
+        "--machine-id",
+        default="",
+        help="Agent UUID sent as X-FlashControl-Machine-ID. Generated if omitted.",
+    )
+    parser.add_argument(
+        "--machine-token",
+        default="",
+        help="Shared development token; required with --send",
+    )
     parser.add_argument("--timeout-seconds", type=int, default=30)
     parser.add_argument("--no-pause", action="store_true")
     return parser
@@ -210,13 +231,8 @@ def run(argv=None):
     parser = build_parser()
     args = parser.parse_args(argv)
     collector_args = []
-    if args.all_disks:
-        collector_args.append("--all-disks")
     if args.debug:
         collector_args.append("--debug")
-    if args.vpd80:
-        collector_args.append("--vpd80")
-
     text, collector_status = capture_collector_json(collector_args)
     if collector_status not in (None, 0):
         return collector_status
@@ -228,12 +244,17 @@ def run(argv=None):
     print_summary(payload, out_path)
 
     if args.send:
+        machine_id, machine_token = resolve_send_identity(
+            args.machine_id, args.machine_token
+        )
+        if not (args.machine_id or "").strip():
+            sys.stderr.write("Generated machine-id %s\n" % machine_id)
         send_observations(
             payload,
             args.send.strip(),
             max(1, int(args.timeout_seconds or 30)),
-            args.machine_id,
-            args.machine_token,
+            machine_id,
+            machine_token,
         )
 
     pause_if_needed(getattr(sys, "frozen", False) and not args.no_pause)

@@ -22,7 +22,6 @@ class FingerprintTests(unittest.TestCase):
         variant["pnp"]["nodes"][1]["hardware_ids"] = list(reversed(variant["pnp"]["nodes"][1]["hardware_ids"]))
         variant["pnp"]["nodes"][1]["compatible_ids"] = list(reversed(variant["pnp"]["nodes"][1]["compatible_ids"]))
         variant["pnp"]["nodes"][0]["hardware_ids"] = ["USBSTOR\\OTHER"]
-        variant["vpd83"] = list(reversed(variant["vpd83"]))
 
         self.assertEqual(
             probe.hardware_stable_hash(baseline),
@@ -59,10 +58,6 @@ class FingerprintTests(unittest.TestCase):
             (
                 "sector_size",
                 lambda record: record["geometry"].__setitem__("bytes_per_sector", 4096),
-            ),
-            (
-                "vpd83",
-                lambda record: record["vpd83"][0].__setitem__("value_hex", "deadbeef"),
             ),
         ]
 
@@ -171,58 +166,17 @@ class FingerprintTests(unittest.TestCase):
             probe.media_state_hash(variant),
         )
 
-    def test_observation_hash_changes_when_any_component_changes(self):
-        hardware_stable = probe.hardware_stable_hash(base_record())
-        pnp_observation = probe.pnp_observation_hash(base_record())
-        media_identity = probe.media_identity_hash(base_record())
-        media_state = probe.media_state_hash(base_record())
-
-        baseline = probe.observation_hash(
-            hardware_stable,
-            pnp_observation,
-            media_identity,
-            media_state,
-        )
-        self.assertEqual(
-            baseline,
-            probe.observation_hash(
-                hardware_stable,
-                pnp_observation,
-                media_identity,
-                media_state,
-            ),
-        )
-        self.assertNotEqual(
-            baseline,
-            probe.observation_hash("a" * 64, pnp_observation, media_identity, media_state),
-        )
-        self.assertNotEqual(
-            baseline,
-            probe.observation_hash(hardware_stable, "a" * 64, media_identity, media_state),
-        )
-        self.assertNotEqual(
-            baseline,
-            probe.observation_hash(hardware_stable, pnp_observation, "a" * 64, media_state),
-        )
-        self.assertNotEqual(
-            baseline,
-            probe.observation_hash(hardware_stable, pnp_observation, media_identity, "a" * 64),
-        )
-
-
 class ObservationAndCapabilityTests(unittest.TestCase):
     def test_summarize_capabilities_aggregates_multiple_devices(self):
         devices = [
-            {"capabilities": {"storage_descriptor": True, "geometry": False, "partition_layout": False, "volume_information": False, "pnp_tree": False, "vpd80": False, "vpd83": False}},
-            {"capabilities": {"storage_descriptor": False, "geometry": True, "partition_layout": True, "volume_information": False, "pnp_tree": True, "vpd80": False, "vpd83": True}},
+            {"capabilities": {"storage_descriptor": True, "geometry": False, "partition_layout": False, "volume_information": False, "pnp_tree": False}},
+            {"capabilities": {"storage_descriptor": False, "geometry": True, "partition_layout": True, "volume_information": False, "pnp_tree": True}},
         ]
         summary = probe.summarize_capabilities(devices)
         self.assertTrue(summary["storage_descriptor"])
         self.assertTrue(summary["geometry"])
         self.assertTrue(summary["partition_layout"])
         self.assertTrue(summary["pnp_tree"])
-        self.assertTrue(summary["vpd83"])
-        self.assertFalse(summary["vpd80"])
 
     def test_collector_error_list_normalizes_and_sorts(self):
         errors = {
@@ -264,8 +218,6 @@ class ObservationAndCapabilityTests(unittest.TestCase):
         record["pnp_observation_sha256"] = "bb" * 32
         record["media_identity_sha256"] = "cc" * 32
         record["media_state_sha256"] = "dd" * 32
-        record["observation_sha256"] = "ee" * 32
-        record["vpd80"] = None
         record["volumes"][0]["errors"] = {
             "mount_paths": None,
             "open": None,
@@ -281,6 +233,7 @@ class ObservationAndCapabilityTests(unittest.TestCase):
             session={
                 "sid": "S-1-5-21-123",
                 "username": "mihail",
+                "domain": "host",
                 "session_id": 2,
                 "errors": {"enumeration": None, "sid": None},
             },
@@ -296,7 +249,6 @@ class ObservationAndCapabilityTests(unittest.TestCase):
             "pnp": "bb" * 32,
             "media_identity": "cc" * 32,
             "media_state": "dd" * 32,
-            "observation": "ee" * 32,
         })
         self.assertNotIn("hardware_stable_sha256", device)
         self.assertNotIn("pnp", device)
@@ -305,21 +257,16 @@ class ObservationAndCapabilityTests(unittest.TestCase):
         self.assertEqual(device["vendor"], "FlashCo")
         self.assertEqual(device["product"], "Probe")
         self.assertEqual(device["serial"], "STOR123")
+        self.assertNotIn("revision", device)
         self.assertEqual(device["vid"], "1234")
         self.assertEqual(device["pid"], "5678")
         self.assertEqual(device["usb_serial"], "ABCDEF")
-        self.assertEqual(device["size_bytes"], 64 * 1024 * 1024)
-        self.assertNotIn("vpd80", device)
+        self.assertNotIn("size_bytes", device)
         self.assertEqual(device["layout"], {
             "style": "MBR",
             "mbr_signature": "A1B2C3D4",
-            "partitions": [{
-                "number": 2,
-                "offset": 4096,
-                "length": 8192,
-                "mbr_type": 7,
-            }],
         })
+        self.assertNotIn("partitions", device["layout"])
         self.assertEqual(observation["session"], {
             "username": "mihail",
             "sid": "S-1-5-21-123",
@@ -329,23 +276,6 @@ class ObservationAndCapabilityTests(unittest.TestCase):
         self.assertEqual(device["volumes"][0]["serial"], "ABCD1234")
         self.assertNotIn("volume_guid", device["volumes"][0])
         self.assertNotIn("mount_paths", device["volumes"][0])
-        self.assertEqual(device["vpd83"], [
-            {
-                "code_set": 1,
-                "type": 3,
-                "association": 0,
-                "value_ascii": "ABCD",
-                "value_hex": "41424344",
-            },
-            {
-                "code_set": 1,
-                "type": 3,
-                "association": 1,
-                "value_hex": "31323334",
-            },
-        ])
-        self.assertNotIn("identifier_size", json.dumps(device["vpd83"]))
-        self.assertNotIn('"value_ascii": null', json.dumps(device["vpd83"]))
 
     def test_build_observation_keeps_full_payload_when_not_compact(self):
         record = copy_record(base_record())

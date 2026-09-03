@@ -1,21 +1,15 @@
 {
-  "server_url": "https://example.local/api/v1/observations",
-  "heartbeat_url": "https://example.local/api/v1/agents/heartbeat",
+  "server_url": "",
+  "heartbeat_url": "",
+  "enroll_url": "",
   "heartbeat_interval_seconds": 60,
+  "device_event_debounce_seconds": 2,
   "agent_id_file": "FlashControlAgent.id",
-  "machine_token": "development-only-secret",
-  "ca_file": "corp-root-ca.pem",
-  "client_cert_file": "agent-client.pem",
-  "client_key_file": "agent-client.key",
-  "proxies": [
-    {
-      "id": "11111111-1111-1111-1111-111111111111",
-      "server_url": "https://proxy-msk.local/api/v1/observations",
-      "heartbeat_url": "https://proxy-msk.local/api/v1/agents/heartbeat",
-      "machine_token": "development-proxy-secret",
-      "networks": ["10.10.0.0/16", "10.30.10.0/24"]
-    }
-  ],
+  "machine_token": "",
+  "machine_token_file": "C:\\ProgramData\\FlashControlAgentState\\FlashControlAgent.token",
+  "ca_file": "",
+  "client_cert_file": "",
+  "client_key_file": "",
   "interval_seconds": 3600,
   "request_timeout_seconds": 30,
   "queue_file": "C:\\ProgramData\\FlashControlAgentState\\FlashControlAgent.queue.db",

@@ -8,7 +8,7 @@ PoC для инвентаризации USB-накопителей и физди
 - без сторонних зависимостей
 - исходник совместим с Python 3.4+
 - опрашивать физические диски через Win32 DeviceIoControl
-- собирать дескриптор хранилища, VPD page 0x83, геометрию,
+- собирать дескриптор хранилища, геометрию,
   разметку диска, тома, IP-адреса, залогиненных пользователей
   и локальных пользователей
 - печатать JSON, удобный для сравнения нескольких флешек
@@ -38,13 +38,10 @@ except ImportError:
 
 
 SCHEMA_VERSION = 1
-PROBE_VERSION = "0.4.0"
+PROBE_VERSION = "0.5.0"
 
 
 # ---- Константы Win32 ---------------------------------------------------------
-
-GENERIC_READ = 0x80000000
-GENERIC_WRITE = 0x40000000
 
 FILE_SHARE_READ = 0x00000001
 FILE_SHARE_WRITE = 0x00000002
@@ -52,14 +49,10 @@ OPEN_EXISTING = 3
 
 FILE_DEVICE_MASS_STORAGE = 0x0000002D
 FILE_DEVICE_DISK = 0x00000007
-FILE_DEVICE_CONTROLLER = 0x00000004
 METHOD_BUFFERED = 0
 FILE_ANY_ACCESS = 0
-FILE_READ_ACCESS = 0x0001
-FILE_WRITE_ACCESS = 0x0002
 
 StorageDeviceProperty = 0
-StorageDeviceIdProperty = 2
 PropertyStandardQuery = 0
 
 BusTypeUsb = 7
@@ -86,12 +79,6 @@ IOCTL_STORAGE_QUERY_PROPERTY = ctl_code(FILE_DEVICE_MASS_STORAGE, 0x0500)
 IOCTL_STORAGE_GET_DEVICE_NUMBER = ctl_code(FILE_DEVICE_MASS_STORAGE, 0x0420)
 IOCTL_DISK_GET_DRIVE_LAYOUT_EX = ctl_code(FILE_DEVICE_DISK, 0x0014)
 IOCTL_DISK_GET_DRIVE_GEOMETRY_EX = ctl_code(FILE_DEVICE_DISK, 0x0028)
-IOCTL_SCSI_PASS_THROUGH = ctl_code(
-    FILE_DEVICE_CONTROLLER,
-    0x0401,
-    METHOD_BUFFERED,
-    FILE_READ_ACCESS | FILE_WRITE_ACCESS,
-)
 
 
 # ---- Настройка kernel32 ------------------------------------------------------
@@ -159,34 +146,6 @@ class SP_DEVINFO_DATA(ctypes.Structure):
         ("Reserved", ctypes.c_void_p),
     ]
 
-
-ULONG_PTR = ctypes.c_ulonglong if ctypes.sizeof(ctypes.c_void_p) == 8 else wintypes.ULONG
-
-
-class SCSI_PASS_THROUGH(ctypes.Structure):
-    _fields_ = [
-        ("Length", wintypes.WORD),
-        ("ScsiStatus", ctypes.c_ubyte),
-        ("PathId", ctypes.c_ubyte),
-        ("TargetId", ctypes.c_ubyte),
-        ("Lun", ctypes.c_ubyte),
-        ("CdbLength", ctypes.c_ubyte),
-        ("SenseInfoLength", ctypes.c_ubyte),
-        ("DataIn", ctypes.c_ubyte),
-        ("DataTransferLength", wintypes.ULONG),
-        ("TimeOutValue", wintypes.ULONG),
-        ("DataBufferOffset", ULONG_PTR),
-        ("SenseInfoOffset", wintypes.ULONG),
-        ("Cdb", ctypes.c_ubyte * 16),
-    ]
-
-
-class SCSI_PASS_THROUGH_WITH_BUFFERS(ctypes.Structure):
-    _fields_ = [
-        ("spt", SCSI_PASS_THROUGH),
-        ("sense", ctypes.c_ubyte * 32),
-        ("data", ctypes.c_ubyte * 255),
-    ]
 
 CreateFileW = kernel32.CreateFileW
 CreateFileW.argtypes = [
@@ -662,38 +621,6 @@ def collect_active_session():
     return result
 
 
-def enumerate_logged_in_users():
-    sessions = ctypes.POINTER(WTS_SESSION_INFO)()
-    count = wintypes.DWORD(0)
-    users = []
-
-    ok = WTSEnumerateSessionsW(
-        WTS_CURRENT_SERVER_HANDLE,
-        0,
-        1,
-        ctypes.byref(sessions),
-        ctypes.byref(count),
-    )
-    if not ok:
-        return users
-
-    try:
-        for index in range(count.value):
-            session = sessions[index]
-            username = query_wts_string(session.SessionId, WTSUserName)
-            if not username:
-                continue
-            domain = query_wts_string(session.SessionId, WTSDomainName)
-            if domain:
-                users.append("%s\\%s" % (domain, username))
-            else:
-                users.append(username)
-    finally:
-        WTSFreeMemory(sessions)
-
-    return unique_sorted(users)
-
-
 def enumerate_local_users():
     buffer = wintypes.LPVOID()
     entries_read = wintypes.DWORD(0)
@@ -784,71 +711,31 @@ def query_domain_membership():
     return result
 
 
+def open_handle(path, access=0, collector=None):
+    handle = CreateFileW(
+        path,
+        access,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        None,
+        OPEN_EXISTING,
+        0,
+        None,
+    )
+    if handle == INVALID_HANDLE_VALUE:
+        return None, win_error(collector)
+    return handle, None
+
+
 def open_disk(number):
-    path = r"\\.\PhysicalDrive%d" % number
-
     # DesiredAccess=0 достаточно для большинства IOCTL с метаданными и снижает
-    # требования к привилегиям. Если на какой-то машине или драйвере не сработает,
-    # запусти от администратора.
-    handle = CreateFileW(
-        path,
-        0,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        None,
-        OPEN_EXISTING,
-        0,
-        None,
-    )
-    if handle == INVALID_HANDLE_VALUE:
-        return None, path, win_error()
-    return handle, path, None
-
-
-def open_volume_letter(letter):
-    path = r"\\.\%s:" % letter
-    handle = CreateFileW(
-        path,
-        0,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        None,
-        OPEN_EXISTING,
-        0,
-        None,
-    )
-    if handle == INVALID_HANDLE_VALUE:
-        return None, path, win_error()
-    return handle, path, None
-
-
-def open_disk_for_scsi(number):
+    # требования к привилегиям.
     path = r"\\.\PhysicalDrive%d" % number
-    handle = CreateFileW(
-        path,
-        GENERIC_READ | GENERIC_WRITE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        None,
-        OPEN_EXISTING,
-        0,
-        None,
-    )
-    if handle == INVALID_HANDLE_VALUE:
-        return None, path, win_error("vpd80")
-    return handle, path, None
+    handle, error = open_handle(path)
+    return handle, path, error
 
 
 def open_device_path(path):
-    handle = CreateFileW(
-        path,
-        0,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        None,
-        OPEN_EXISTING,
-        0,
-        None,
-    )
-    if handle == INVALID_HANDLE_VALUE:
-        return None, win_error("setupapi_disk_open")
-    return handle, None
+    return open_handle(path, collector="setupapi_disk_open")
 
 
 def cm_device_id(devinst):
@@ -905,6 +792,9 @@ def pnp_parent_chain(devinst, max_depth=8):
         node = pnp_node(current)
         node["depth"] = len(nodes)
         nodes.append(node)
+        instance_id = (node.get("device_instance_id") or "").upper()
+        if instance_id.startswith("USB\\VID_"):
+            break
         parent = wintypes.DWORD(0)
         if CM_Get_Parent(ctypes.byref(parent), current, 0) != CR_SUCCESS:
             break
@@ -1174,18 +1064,7 @@ def volume_mount_paths(volume_guid):
 def open_volume_guid(volume_guid):
     # CreateFile expects the volume GUID path without its trailing backslash.
     path = volume_guid[:-1] if volume_guid.endswith("\\") else volume_guid
-    handle = CreateFileW(
-        path,
-        0,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        None,
-        OPEN_EXISTING,
-        0,
-        None,
-    )
-    if handle == INVALID_HANDLE_VALUE:
-        return None, win_error("volume_open")
-    return handle, None
+    return open_handle(path, collector="volume_open")
 
 
 def enumerate_volumes_by_physical_drive():
@@ -1253,158 +1132,6 @@ def enumerate_volumes_by_physical_drive():
         FindVolumeClose(search_handle)
 
     return result
-
-
-def query_vpd80_serial(physical_drive_number):
-    handle, _, open_error = open_disk_for_scsi(physical_drive_number)
-    if handle is None:
-        return None, open_error
-
-    try:
-        request = SCSI_PASS_THROUGH_WITH_BUFFERS()
-        request.spt.Length = ctypes.sizeof(SCSI_PASS_THROUGH)
-        request.spt.CdbLength = 6
-        request.spt.SenseInfoLength = len(request.sense)
-        request.spt.DataIn = 1  # SCSI_IOCTL_DATA_IN
-        request.spt.DataTransferLength = len(request.data)
-        request.spt.TimeOutValue = 5
-        request.spt.DataBufferOffset = SCSI_PASS_THROUGH_WITH_BUFFERS.data.offset
-        request.spt.SenseInfoOffset = SCSI_PASS_THROUGH_WITH_BUFFERS.sense.offset
-        request.spt.Cdb[0] = 0x12  # INQUIRY
-        request.spt.Cdb[1] = 0x01  # EVPD
-        request.spt.Cdb[2] = 0x80  # Unit Serial Number VPD page
-        request.spt.Cdb[4] = len(request.data)
-
-        request_bytes = ctypes.string_at(ctypes.byref(request), ctypes.sizeof(request))
-        response_bytes, ioctl_error = ioctl(
-            handle,
-            IOCTL_SCSI_PASS_THROUGH,
-            request_bytes,
-            ctypes.sizeof(request),
-        )
-        if response_bytes is None:
-            return None, normalize_collector_error("vpd80", ioctl_error)
-        if len(response_bytes) < SCSI_PASS_THROUGH_WITH_BUFFERS.data.offset + 4:
-            return None, structured_error(
-                "vpd80",
-                "short SCSI pass-through response (%d bytes)" % len(response_bytes),
-                status="invalid_data",
-            )
-
-        response = SCSI_PASS_THROUGH_WITH_BUFFERS.from_buffer_copy(
-            response_bytes.ljust(ctypes.sizeof(request), b"\x00")
-        )
-        if response.spt.ScsiStatus != 0:
-            sense_bytes = bytes(bytearray(response.sense))
-            return None, {
-                "collector": "vpd80",
-                "winerror": None,
-                "message": "SCSI INQUIRY returned status 0x%02X" % response.spt.ScsiStatus,
-                "status": "unsupported_or_invalid",
-                "scsi_status": response.spt.ScsiStatus,
-                "sense_hex": sense_bytes.hex() if hasattr(sense_bytes, "hex") else "".join(
-                    "%02x" % value for value in bytearray(sense_bytes)
-                ),
-            }
-
-        data_offset = SCSI_PASS_THROUGH_WITH_BUFFERS.data.offset
-        available = min(len(response_bytes) - data_offset, len(response.data))
-        page = response_bytes[data_offset:data_offset + available]
-        if len(page) < 4:
-            return None, structured_error(
-                "vpd80",
-                "short VPD80 page (%d bytes)" % len(page),
-                status="invalid_data",
-            )
-        if page[1] != 0x80:
-            return None, structured_error(
-                "vpd80",
-                "unexpected VPD page 0x%02X" % page[1],
-                status="unsupported_or_invalid",
-            )
-
-        page_length = struct.unpack_from(">H", page, 2)[0]
-        if page_length > len(page) - 4:
-            return None, structured_error(
-                "vpd80",
-                "VPD80 page length %d exceeds returned data %d"
-                % (page_length, len(page) - 4),
-                status="invalid_data",
-            )
-        raw_serial = page[4:4 + page_length]
-        serial = clean_ascii(raw_serial)
-        if not serial:
-            return None, structured_error(
-                "vpd80",
-                "VPD80 returned an empty serial",
-                status="missing",
-            )
-        return {
-            "supported": True,
-            "serial": serial,
-            "page_length": page_length,
-            "source": "scsi_inquiry_evpd_0x80",
-        }, None
-    finally:
-        CloseHandle(handle)
-
-
-def query_vpd83_identifiers(handle):
-    query = struct.pack("<II", StorageDeviceIdProperty, PropertyStandardQuery) + b"\x00\x00\x00\x00"
-    data, err = ioctl(handle, IOCTL_STORAGE_QUERY_PROPERTY, query, 16384)
-    if data is None:
-        return [], err
-
-    if len(data) < 12:
-        return [], "short STORAGE_DEVICE_ID_DESCRIPTOR (%d bytes)" % len(data)
-
-    version, size, count = struct.unpack_from("<III", data, 0)
-    identifiers = []
-    offset = 12
-
-    # Фиксированная часть STORAGE_IDENTIFIER:
-    # DWORD CodeSet
-    # DWORD Type
-    # USHORT IdentifierSize
-    # USHORT NextOffset
-    # DWORD Association
-    # BYTE Identifier[1]
-    for _ in range(min(count, 64)):
-        if offset + 16 > len(data):
-            break
-
-        code_set, ident_type, ident_size, next_offset, association = struct.unpack_from(
-            "<IIHHI", data, offset
-        )
-
-        start = offset + 16
-        end = min(start + ident_size, len(data))
-        raw_id = data[start:end]
-
-        printable = None
-        try:
-            candidate = raw_id.decode("ascii", "strict").strip("\x00 ").strip()
-            if candidate and all(31 < ord(ch) < 127 for ch in candidate):
-                printable = candidate
-        except Exception:
-            pass
-
-        identifiers.append({
-            "code_set": code_set,
-            "type": ident_type,
-            "association": association,
-            "identifier_size": ident_size,
-            "value_ascii": printable,
-            "value_hex": raw_id.hex() if hasattr(raw_id, "hex") else "".join("%02x" % (ch if isinstance(ch, int) else ord(ch)) for ch in raw_id),
-        })
-
-        if next_offset == 0:
-            break
-        if next_offset < 16:
-            break
-        offset += next_offset
-
-    return identifiers, None
 
 
 def query_geometry(handle):
@@ -1563,24 +1290,6 @@ def canonical_sha256(value):
     return hashlib.sha256(payload).hexdigest()
 
 
-def normalize_vpd83(vpd83):
-    normalized = []
-    for item in vpd83 or []:
-        normalized.append({
-            "code_set": item.get("code_set"),
-            "type": item.get("type"),
-            "association": item.get("association"),
-            "value_hex": item.get("value_hex"),
-        })
-    normalized.sort(key=lambda item: (
-        item.get("association") if item.get("association") is not None else -1,
-        item.get("type") if item.get("type") is not None else -1,
-        item.get("code_set") if item.get("code_set") is not None else -1,
-        item.get("value_hex") or "",
-    ))
-    return normalized
-
-
 def partition_sort_key(partition):
     return (
         partition.get("number") if partition.get("number") is not None else -1,
@@ -1598,7 +1307,6 @@ def volume_sort_key(volume):
 def hardware_stable_evidence(record):
     storage = record.get("storage") or {}
     geometry = record.get("geometry") or {}
-    vpd80 = record.get("vpd80") or {}
     pnp = record.get("pnp") or {}
     usb = pnp.get("usb") or {}
     serial_candidate = usb.get("serial_candidate") or {}
@@ -1625,10 +1333,6 @@ def hardware_stable_evidence(record):
             "size_bytes": geometry.get("size_bytes"),
             "bytes_per_sector": geometry.get("bytes_per_sector"),
         },
-        "vpd80": {
-            "serial": vpd80.get("serial"),
-        },
-        "vpd83": normalize_vpd83(record.get("vpd83")),
     }
 
 
@@ -1731,16 +1435,7 @@ def media_state_hash(record):
     return canonical_sha256(media_state_evidence(record))
 
 
-def observation_hash(hardware_stable, pnp_observation, media_identity, media_state):
-    return canonical_sha256({
-        "hardware_stable_sha256": hardware_stable,
-        "pnp_observation_sha256": pnp_observation,
-        "media_identity_sha256": media_identity,
-        "media_state_sha256": media_state,
-    })
-
-
-def scan_physical_disks(max_disks=64, include_non_usb=False, enable_vpd80=False):
+def scan_physical_disks(max_disks=64):
     devices = []
     errors = []
     pnp_by_disk, pnp_collector_error = run_collector(
@@ -1788,23 +1483,11 @@ def scan_physical_disks(max_disks=64, include_non_usb=False, enable_vpd80=False)
                 })
                 continue
 
-            if storage.get("bus_type") != BusTypeUsb and not include_non_usb:
+            if storage.get("bus_type") != BusTypeUsb:
                 continue
 
             geometry, geometry_err = run_collector("geometry", query_geometry, handle)
             layout, layout_err = run_collector("drive_layout", query_drive_layout, handle)
-            if enable_vpd80:
-                vpd80, vpd80_err = run_collector(
-                    "vpd80",
-                    query_vpd80_serial,
-                    number,
-                )
-            else:
-                vpd80, vpd80_err = None, None
-            vpd83, vpd_err = run_collector("vpd83", query_vpd83_identifiers, handle)
-            if vpd83 is None:
-                vpd83 = []
-
             record = {
                 "physical_drive": number,
                 "path": path,
@@ -1812,16 +1495,12 @@ def scan_physical_disks(max_disks=64, include_non_usb=False, enable_vpd80=False)
                 "geometry": geometry,
                 "layout": layout,
                 "volumes": volumes_by_disk.get(number, []),
-                "vpd80": vpd80,
-                "vpd83": vpd83,
                 "pnp": pnp_by_disk.get(number),
                 "capabilities": {
                     "storage_descriptor": storage is not None,
                     "geometry": geometry is not None,
                     "partition_layout": layout is not None,
                     "volume_information": volume_collector_error is None,
-                    "vpd80": enable_vpd80 and vpd80_err is None,
-                    "vpd83": vpd_err is None,
                     "pnp_tree": pnp_collector_error is None,
                 },
                 "capability_status": {
@@ -1833,12 +1512,6 @@ def scan_physical_disks(max_disks=64, include_non_usb=False, enable_vpd80=False)
                         else "no_volumes" if volume_collector_error is None
                         else volume_collector_error["status"]
                     ),
-                    "vpd80": (
-                        "disabled" if not enable_vpd80
-                        else "available" if vpd80_err is None
-                        else vpd80_err["status"]
-                    ),
-                    "vpd83": "available" if vpd_err is None else vpd_err["status"],
                     "pnp_tree": (
                         "available" if pnp_by_disk.get(number) is not None
                         else "not_found" if pnp_collector_error is None
@@ -1848,8 +1521,6 @@ def scan_physical_disks(max_disks=64, include_non_usb=False, enable_vpd80=False)
                 "collector_errors": {
                     "geometry": geometry_err,
                     "partition_layout": layout_err,
-                    "vpd80": vpd80_err,
-                    "vpd83": vpd_err,
                 },
             }
 
@@ -1857,17 +1528,10 @@ def scan_physical_disks(max_disks=64, include_non_usb=False, enable_vpd80=False)
             pnp_observation = pnp_observation_hash(record)
             media_identity = media_identity_hash(record)
             media_state = media_state_hash(record)
-            record["fingerprint_version"] = 2
             record["hardware_stable_sha256"] = hardware_stable
             record["pnp_observation_sha256"] = pnp_observation
             record["media_identity_sha256"] = media_identity
             record["media_state_sha256"] = media_state
-            record["observation_sha256"] = observation_hash(
-                hardware_stable,
-                pnp_observation,
-                media_identity,
-                media_state,
-            )
             devices.append(record)
 
         finally:
@@ -1889,7 +1553,6 @@ def host_info(include_diagnostics=False):
     join_info = query_domain_membership()
     result = {
         "hostname": socket.gethostname(),
-        "is_domain_joined": join_info["is_domain_joined"],
         "ip_addresses": host_ip_addresses(include_link_local=include_diagnostics),
     }
     if join_info["domain_name"]:
@@ -1906,6 +1569,7 @@ def host_info(include_diagnostics=False):
         result["architecture"] = platform.machine()
         result["python_version"] = platform.python_version()
         result["join_status"] = join_info["join_status"]
+        result["is_domain_joined"] = join_info["is_domain_joined"]
         result["domain_name"] = join_info["domain_name"]
         result["workgroup_name"] = join_info["workgroup_name"]
         result["local_users"] = enumerate_local_users()
@@ -1919,8 +1583,6 @@ def summarize_capabilities(devices):
         "partition_layout",
         "volume_information",
         "pnp_tree",
-        "vpd80",
-        "vpd83",
     )
     summary = {}
     for name in names:
@@ -1945,25 +1607,7 @@ def collector_error_list(error_map):
 STORAGE_PAYLOAD_KEYS = (
     "vendor",
     "product",
-    "revision",
     "serial",
-)
-
-PARTITION_PAYLOAD_KEYS = (
-    "number",
-    "offset",
-    "length",
-    "mbr_type",
-    "partition_type_guid",
-    "partition_guid",
-)
-
-VPD83_PAYLOAD_KEYS = (
-    "code_set",
-    "type",
-    "association",
-    "value_ascii",
-    "value_hex",
 )
 
 SESSION_PAYLOAD_KEYS = (
@@ -1977,16 +1621,13 @@ HASH_FIELDS = (
     ("pnp", "pnp_observation_sha256"),
     ("media_identity", "media_identity_sha256"),
     ("media_state", "media_state_sha256"),
-    ("observation", "observation_sha256"),
 )
 
 DEVICE_HASH_KEYS = (
-    "fingerprint_version",
     "hardware_stable_sha256",
     "pnp_observation_sha256",
     "media_identity_sha256",
     "media_state_sha256",
-    "observation_sha256",
 )
 
 
@@ -2022,13 +1663,6 @@ def compact_layout(layout):
         result["mbr_signature"] = layout["mbr_signature"]
     if layout.get("gpt_disk_guid"):
         result["gpt_disk_guid"] = layout["gpt_disk_guid"]
-    partitions = []
-    for partition in layout.get("partitions") or []:
-        if not isinstance(partition, dict) or partition.get("is_unused"):
-            continue
-        partitions.append(compact_mapping(partition, PARTITION_PAYLOAD_KEYS))
-    if partitions:
-        result["partitions"] = partitions
     return result
 
 
@@ -2048,21 +1682,15 @@ def compact_volume(volume):
     return result
 
 
-def compact_vpd83(vpd83):
-    result = []
-    for item in vpd83 or []:
-        if not isinstance(item, dict):
-            continue
-        compacted = compact_mapping(item, VPD83_PAYLOAD_KEYS)
-        if compacted:
-            result.append(compacted)
-    return result
-
-
-def compact_session(session):
+def compact_session(session, host=None):
     if not isinstance(session, dict):
         return session
-    return compact_mapping(session, SESSION_PAYLOAD_KEYS)
+    result = compact_mapping(session, SESSION_PAYLOAD_KEYS)
+    hostname = str((host or {}).get("hostname") or "").strip().lower()
+    domain = str(result.get("domain") or "").strip().lower()
+    if domain and hostname and domain == hostname:
+        result.pop("domain", None)
+    return result
 
 
 def observation_hashes(device_record):
@@ -2084,9 +1712,6 @@ def compact_device_payload(device):
     usb_serial = usb.get("serial")
     if usb_serial and usb_serial != result.get("serial"):
         result["usb_serial"] = usb_serial
-    geometry = device.get("geometry") or {}
-    if isinstance(geometry, dict) and geometry.get("size_bytes") is not None:
-        result["size_bytes"] = geometry["size_bytes"]
     layout = device.get("layout")
     if isinstance(layout, dict):
         compacted_layout = compact_layout(layout)
@@ -2101,12 +1726,6 @@ def compact_device_payload(device):
             volumes.append(compacted)
     if volumes:
         result["volumes"] = volumes
-    vpd80 = device.get("vpd80")
-    if isinstance(vpd80, dict) and vpd80.get("serial"):
-        result["vpd80"] = vpd80["serial"]
-    vpd83 = compact_vpd83(device.get("vpd83") or [])
-    if vpd83:
-        result["vpd83"] = vpd83
     return result
 
 
@@ -2127,7 +1746,7 @@ def build_observation(
         device.pop(key, None)
     if compact:
         device = compact_device_payload(device)
-        session = compact_session(session)
+        session = compact_session(session, host)
     payload = {
         "schema_version": SCHEMA_VERSION,
         "probe_version": PROBE_VERSION,
@@ -2209,11 +1828,9 @@ def watch_interval_from_argv(argv):
     return value
 
 
-def watch_usb(include_diagnostics=False, interval_seconds=2.0, enable_vpd80=False):
+def watch_usb(include_diagnostics=False, interval_seconds=2.0):
     devices, scan_errors = scan_physical_disks(
         max_disks=64,
-        include_non_usb=False,
-        enable_vpd80=enable_vpd80,
     )
     observed_at = utc_now_iso()
     host = host_info(include_diagnostics=include_diagnostics)
@@ -2259,8 +1876,6 @@ def watch_usb(include_diagnostics=False, interval_seconds=2.0, enable_vpd80=Fals
             # trigger, while the Observation must contain fresh complete facts.
             current_devices, current_errors = scan_physical_disks(
                 max_disks=64,
-                include_non_usb=False,
-                enable_vpd80=enable_vpd80,
             )
             current_by_key = {}
             for device in current_devices:
@@ -2322,9 +1937,7 @@ def watch_usb(include_diagnostics=False, interval_seconds=2.0, enable_vpd80=Fals
 
 
 def main():
-    include_non_usb = "--all-disks" in sys.argv
     include_diagnostics = "--debug" in sys.argv or "--diagnostics" in sys.argv
-    enable_vpd80 = "--vpd80" in sys.argv
 
     if "--watch" in sys.argv:
         try:
@@ -2335,14 +1948,11 @@ def main():
         watch_usb(
             include_diagnostics=include_diagnostics,
             interval_seconds=interval_seconds,
-            enable_vpd80=enable_vpd80,
         )
         return 0
 
     devices, errors = scan_physical_disks(
         max_disks=64,
-        include_non_usb=include_non_usb,
-        enable_vpd80=enable_vpd80,
     )
 
     observed_at_utc = utc_now_iso()

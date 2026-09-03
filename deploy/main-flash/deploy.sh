@@ -79,12 +79,15 @@ if "${docker_cmd[@]}" container inspect "$app_container" >/dev/null 2>&1; then
 fi
 
 database_url="postgresql+psycopg://${postgres_user}:${postgres_password}@${db_container}:5432/${postgres_db}"
+trusted_proxies=$(env_value FLASHCONTROL_TRUSTED_PROXIES)
+trusted_proxies=${trusted_proxies:-172.30.0.0/24}
 if ! "${docker_cmd[@]}" run -d \
   --name "$app_container" \
   --restart unless-stopped \
   --network "$network" \
   --env-file "$env_file" \
   -e FLASHCONTROL_DATABASE_URL="$database_url" \
+  -e FLASHCONTROL_TRUSTED_PROXIES="$trusted_proxies" \
   "$image" >/dev/null; then
   "${docker_cmd[@]}" rename "$previous_container" "$app_container" 2>/dev/null || true
   "${docker_cmd[@]}" start "$app_container" >/dev/null 2>&1 || true

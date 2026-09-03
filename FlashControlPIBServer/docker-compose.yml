@@ -12,9 +12,9 @@ services:
       - ./migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql:ro
       - ./migrations/002_identity_engine.sql:/docker-entrypoint-initdb.d/002_identity_engine.sql:ro
       - ./migrations/003_auth.sql:/docker-entrypoint-initdb.d/003_auth.sql:ro
-      - ./migrations/004_oidc.sql:/docker-entrypoint-initdb.d/004_oidc.sql:ro
       - ./migrations/005_agents.sql:/docker-entrypoint-initdb.d/005_agents.sql:ro
       - ./migrations/006_machine_auth.sql:/docker-entrypoint-initdb.d/006_machine_auth.sql:ro
+      - ./migrations/007_agent_enroll.sql:/docker-entrypoint-initdb.d/007_agent_enroll.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U flashcontrol -d flashcontrol"]
       interval: 5s
@@ -26,15 +26,6 @@ services:
     environment:
       FLASHCONTROL_ENVIRONMENT: production
       FLASHCONTROL_DATABASE_URL: postgresql+psycopg://flashcontrol:flashcontrol@postgres:5432/flashcontrol
-      FLASHCONTROL_AUTH_PROVIDER: oidc
-      FLASHCONTROL_OIDC_ISSUER: ${FLASHCONTROL_OIDC_ISSUER:-}
-      FLASHCONTROL_OIDC_CLIENT_ID: ${FLASHCONTROL_OIDC_CLIENT_ID:-}
-      FLASHCONTROL_OIDC_CLIENT_SECRET: ${FLASHCONTROL_OIDC_CLIENT_SECRET:-}
-      FLASHCONTROL_OIDC_REDIRECT_URI: ${FLASHCONTROL_OIDC_REDIRECT_URI:-}
-      FLASHCONTROL_OIDC_GROUP_CLAIM: ${FLASHCONTROL_OIDC_GROUP_CLAIM:-groups}
-      FLASHCONTROL_OIDC_ADMIN_GROUPS: ${FLASHCONTROL_OIDC_ADMIN_GROUPS:-}
-      FLASHCONTROL_OIDC_SECURITY_GROUPS: ${FLASHCONTROL_OIDC_SECURITY_GROUPS:-}
-      FLASHCONTROL_OIDC_AUDITOR_GROUPS: ${FLASHCONTROL_OIDC_AUDITOR_GROUPS:-}
       FLASHCONTROL_MACHINE_AUTH_MODE: mtls
       FLASHCONTROL_TRUSTED_MTLS_PROXIES: ${FLASHCONTROL_TRUSTED_MTLS_PROXIES:-}
       FLASHCONTROL_MTLS_IDENTITIES: ${FLASHCONTROL_MTLS_IDENTITIES:-{}}

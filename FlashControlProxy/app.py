@@ -1,9 +1,11 @@
 import asyncio
 import contextlib
+import hashlib
 import hmac
 import ipaddress
 import json
 import os
+import secrets
 import ssl
 import uuid
 
@@ -41,6 +43,10 @@ MAIN_CLIENT_CERT = os.environ.get("FLASHCONTROL_PROXY_MAIN_CLIENT_CERT", "")
 MAIN_CLIENT_KEY = os.environ.get("FLASHCONTROL_PROXY_MAIN_CLIENT_KEY", "")
 
 
+def _hash_token(value):
+    return hashlib.sha256((value or "").encode("utf-8")).hexdigest()
+
+
 def require_agent(
     request: Request,
     machine_id: uuid.UUID = Header(alias="X-FlashControl-Machine-ID"),
@@ -56,9 +62,13 @@ def require_agent(
     if machine_kind != "agent":
         raise HTTPException(status_code=401, detail="invalid agent credentials")
     if AUTH_MODE == "token":
-        if not AGENT_TOKEN or not hmac.compare_digest(machine_token, AGENT_TOKEN):
-            raise HTTPException(status_code=401, detail="invalid agent credentials")
-        return machine_id
+        if queue.agent_token_matches(machine_id, _hash_token(machine_token)):
+            return machine_id
+        if AGENT_TOKEN and hmac.compare_digest(
+            _hash_token(machine_token), _hash_token(AGENT_TOKEN)
+        ):
+            return machine_id
+        raise HTTPException(status_code=401, detail="invalid agent credentials")
     if AUTH_MODE != "mtls" or not any(source in network for network in TRUSTED_MTLS_PROXIES):
         raise HTTPException(status_code=401, detail="untrusted mTLS terminator")
     if request.headers.get("X-FlashControl-Client-Verify") != "SUCCESS":
@@ -125,6 +135,38 @@ async def lifespan(_app):
 
 
 app = FastAPI(title="FlashControl Proxy Collector", lifespan=lifespan)
+
+
+@app.post("/api/v1/agents/enroll")
+def enroll(request: Request, payload: dict = Body(...)):
+    try:
+        source = ipaddress.ip_address(request.client.host if request.client else "")
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="invalid source address") from exc
+    if not any(source in network for network in ALLOWED_NETWORKS):
+        raise HTTPException(status_code=403, detail="source network is not allowed")
+    try:
+        agent_id = uuid.UUID(str(payload.get("agent_id") or ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="agent_id must be a UUID") from exc
+    hostname = str(payload.get("hostname") or "").strip()
+    if not hostname:
+        raise HTTPException(status_code=422, detail="hostname is required")
+    domain = payload.get("domain")
+    if domain is not None:
+        domain = str(domain).strip() or None
+    token = secrets.token_urlsafe(48)
+    try:
+        queue.issue_agent_token(
+            agent_id,
+            _hash_token(token),
+            hostname,
+            domain,
+            str(source),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"agent_id": str(agent_id), "machine_token": token}
 
 
 @app.get("/health/live")

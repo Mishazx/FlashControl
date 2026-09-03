@@ -8,6 +8,7 @@ import os
 import sys
 import tempfile
 import unittest
+import uuid
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
@@ -116,6 +117,17 @@ class DumpTests(unittest.TestCase):
                 os.rmdir(out_dir)
             except OSError:
                 pass
+
+    def test_send_requires_machine_token_and_uuid_identity(self):
+        with self.assertRaises(RuntimeError):
+            dump.resolve_send_identity("", "")
+        with self.assertRaises(RuntimeError):
+            dump.resolve_send_identity("dump-test-agent", "secret")
+        generated, token = dump.resolve_send_identity("", "secret")
+        self.assertEqual(token, "secret")
+        self.assertEqual(str(uuid.UUID(generated)), generated)
+        known = "11111111-1111-1111-1111-111111111111"
+        self.assertEqual(dump.resolve_send_identity(known, "secret")[0], known)
 
 
 if __name__ == "__main__":

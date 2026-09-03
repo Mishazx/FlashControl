@@ -27,13 +27,13 @@
       "name": "collision_media_pair",
       "profiles": ["collision_media_a", "collision_media_b"],
       "same_hashes": ["hardware_stable_sha256", "pnp_observation_sha256"],
-      "different_hashes": ["media_identity_sha256", "media_state_sha256", "observation_sha256"]
+      "different_hashes": ["media_identity_sha256", "media_state_sha256"]
     },
     {
       "name": "hardware_serial_pair",
       "profiles": ["hardware_variant_a", "hardware_variant_b"],
       "same_hashes": ["media_identity_sha256", "media_state_sha256"],
-      "different_hashes": ["hardware_stable_sha256", "pnp_observation_sha256", "observation_sha256"]
+      "different_hashes": ["hardware_stable_sha256", "pnp_observation_sha256"]
     }
   ],
   "repeatability_profiles": [
@@ -43,7 +43,6 @@
     "hardware_stable_sha256",
     "pnp_observation_sha256",
     "media_identity_sha256",
-    "media_state_sha256",
-    "observation_sha256"
+    "media_state_sha256"
   ]
 }

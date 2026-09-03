@@ -28,7 +28,6 @@ HASH_FIELDS = (
     "pnp_observation_sha256",
     "media_identity_sha256",
     "media_state_sha256",
-    "observation_sha256",
 )
 
 HASH_ALIASES = {
@@ -36,7 +35,6 @@ HASH_ALIASES = {
     "pnp_observation_sha256": ("pnp", "pnp_observation_sha256"),
     "media_identity_sha256": ("media_identity", "media_identity_sha256"),
     "media_state_sha256": ("media_state", "media_state_sha256"),
-    "observation_sha256": ("observation", "observation_sha256"),
 }
 
 
@@ -181,10 +179,6 @@ def check_expectation(profile_name, device, observation):
     for field in HASH_FIELDS:
         if not hash_value(observation, device, field):
             errors.append("missing hash field: %s" % field)
-
-    version = device.get("fingerprint_version")
-    if version not in (None, 2):
-        errors.append("expected fingerprint_version=2, got %r" % version)
 
     return errors, warnings
 

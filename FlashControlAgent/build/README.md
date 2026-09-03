@@ -4,44 +4,38 @@
 
 ```powershell
 cd FlashControlAgent
-.\build\package.ps1
+.\build\package.ps1 -ServerUrl "https://collector.example.local/api/v1/observations"
 ```
+
+This bakes the collector URL into `agent_config.json` (and into the installer). After that, install is just:
+
+```powershell
+.\FlashControlAgentInstaller.exe install
+```
+
+No `--machine-token` and no `--server-url`. The service tells the collector who it is (`hostname`, domain, IPs, stable `agent_id`) via `POST /api/v1/agents/enroll`, gets a per-machine token, and stores it in `FlashControlAgentState\FlashControlAgent.token`. Enrollment is allowed only from the collector's configured networks.
 
 This builds:
 
 - `FlashControlAgentService.exe`
-- `FlashControlAgentBuild.exe`
-- `FlashControlAgentDump.exe` — test helper: scans USB sticks and writes the JSON the agent would send
 - `FlashControlAgentInstaller.exe`
 - `agent_config.json`
 
-## Test dump
-
-Run next to a plugged-in USB stick:
-
-```powershell
-.\FlashControlAgentDump.exe
-```
-
-This writes `FlashControlAgentDump.json` next to the EXE — the same observation payload the service would queue and POST. Optional live send:
-
-```powershell
-.\FlashControlAgentDump.exe --send "https://server.example/api/v1/observations" --machine-token "..."
-```
-
 ## Install
 
-Run the installer **as Administrator**:
+Run the installer **as Administrator**. If the package was built with `-ServerUrl`, no extra arguments are required:
 
 ```powershell
-.\FlashControlAgentInstaller.exe install --server-url "https://server.example/api/flashcontrol"
+.\FlashControlAgentInstaller.exe install
 ```
 
-Reinstall:
+Optional overrides for a one-off machine:
 
 ```powershell
-.\FlashControlAgentInstaller.exe reinstall --server-url "https://server.example/api/flashcontrol"
+.\FlashControlAgentInstaller.exe install --server-url "https://collector.example.local/api/v1/observations"
 ```
+
+`--machine-token` is only for a shared development token; the normal path is enroll. Production mTLS still uses `--client-cert-file`.
 
 ## Logs
 
@@ -49,6 +43,8 @@ Reinstall:
 - Service log: `C:\ProgramData\FlashControlAgent\FlashControlAgent.log`
 - Bootstrap log (early startup): `C:\ProgramData\FlashControlAgent\FlashControlAgent.bootstrap.log`
 - Persistent delivery queue: `C:\ProgramData\FlashControlAgentState\FlashControlAgent.queue.db`
+- Stable agent UUID: `C:\ProgramData\FlashControlAgentState\FlashControlAgent.id`
+- Issued machine token: `C:\ProgramData\FlashControlAgentState\FlashControlAgent.token`
 
 ## Install layout
 
@@ -60,6 +56,19 @@ After install, `C:\ProgramData\FlashControlAgent` contains:
 
 ## Delivery guarantees
 
+## Device change notifications
+
+The Windows service registers for `GUID_DEVINTERFACE_DISK` notifications. A
+disk arrival or removal wakes the service, waits two seconds by default for
+PnP/storage initialization, rescans USB mass-storage, and queues `connected`
+or `disconnected` Observations. `device_event_debounce_seconds` in
+`agent_config.json` changes that delay. The ordinary `interval_seconds` scan
+remains a fallback when Windows notifications are unavailable.
+
+The agent is configured with one Collector API address. Deployment or DNS decides
+whether that address is the Main Server or a local Proxy Collector; the agent
+does not keep a proxy list and does not perform route selection.
+
 Each Observation is committed to the local SQLite queue before the first HTTP
 request. A successful 2xx response removes it from the queue. Network and server
 errors keep the original payload and `event_id` for an exponential-backoff retry.
@@ -67,8 +76,9 @@ If the service stops after the server accepted an event but before the local
 acknowledgement, the event is sent again; the Main Server's unique `event_id`
 constraint makes that retry idempotent.
 
-The delivery queue lives in a separate state directory next to the install
-folder, so reinstalling the service does not wipe queued observations.
+The delivery queue and agent UUID live in a separate state directory next to
+the install folder, so reinstalling the service does not wipe queued
+observations or change the enrolled agent identity.
 
 The queue never silently evicts old audit events. When `queue_max_items` is
 reached, collection fails visibly in the service log until queued events can be
@@ -82,4 +92,6 @@ delivered or an administrator raises the configured limit.
 
 ## Kaspersky rollout
 
-Package the contents of `dist` and run `FlashControlAgentInstaller.exe` with the needed parameters on target machines.
+Package the contents of `dist` and run `FlashControlAgentInstaller.exe install`
+on target machines. Build a separate package per site with that site's
+`-ServerUrl`.

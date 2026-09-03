@@ -44,8 +44,8 @@ class HelperTests(unittest.TestCase):
             "message": "bad parameter",
             "status": "unsupported_or_invalid",
         }
-        normalized = probe.normalize_collector_error("vpd83", error)
-        self.assertEqual(normalized["collector"], "vpd83")
+        normalized = probe.normalize_collector_error("geometry", error)
+        self.assertEqual(normalized["collector"], "geometry")
         self.assertEqual(normalized["winerror"], 87)
         self.assertEqual(normalized["message"], "bad parameter")
         self.assertEqual(normalized["status"], "unsupported_or_invalid")

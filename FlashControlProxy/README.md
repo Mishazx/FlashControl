@@ -1,9 +1,17 @@
 # FlashControl Proxy Collector
 
-The Proxy is a specialized store-and-forward service. It accepts only
-`POST /api/v1/observations` and `POST /api/v1/agents/heartbeat`, checks the
-agent identity and source CIDR, commits data to a durable SQLite WAL queue,
-returns `202`, and forwards queued items to Main with its own machine identity.
+The Proxy is a specialized store-and-forward service. It accepts
+`POST /api/v1/agents/enroll`, `POST /api/v1/observations` and
+`POST /api/v1/agents/heartbeat`, checks the agent identity and source CIDR,
+commits data to a durable SQLite WAL queue, returns `202`, and forwards queued
+items to Main with its own machine identity.
+
+Agents on an allowed network can enroll without a pre-shared token. The Proxy
+issues a per-machine token bound to that hostname and then accepts it on ingest.
+
+An agent has one configured Collector URL and does not distinguish Proxy from
+Main. On an intermediate site, that URL resolves to this local Proxy; on the
+central network it resolves to Main. The Proxy owns the upstream connection.
 
 Development configuration:
 

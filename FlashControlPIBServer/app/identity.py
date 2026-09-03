@@ -50,26 +50,6 @@ def computer_key(host: dict) -> str:
     return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
-def strong_identifiers(device: dict) -> set[str]:
-    values = set()
-    vpd83 = device.get("vpd83") or []
-    if isinstance(vpd83, dict):
-        vpd83 = vpd83.get("identifiers") or []
-    for item in vpd83:
-        if isinstance(item, dict):
-            value = (
-                item.get("value")
-                or item.get("identifier")
-                or item.get("value_hex")
-                or item.get("value_ascii")
-            )
-        else:
-            value = item
-        if value:
-            values.add("vpd83:" + str(value).strip().lower())
-    return values
-
-
 def serial_identifiers(device: dict) -> set[str]:
     values = set()
     storage = device.get("storage") if isinstance(device.get("storage"), dict) else {}
@@ -102,11 +82,8 @@ def classify_pair(current: Observation, previous: Observation) -> Classification
         current.media_identity_sha256
         and current.media_identity_sha256 == previous.media_identity_sha256
     )
-    common_strong = strong_identifiers(current_device) & strong_identifiers(previous_device)
     common_serials = serial_identifiers(current_device) & serial_identifiers(previous_device)
 
-    if common_strong and same_hardware:
-        return Classification("SAME", 0.99, True, ["matching_vpd83", "matching_hardware"])
     if same_hardware and same_media and current.computer_id == previous.computer_id:
         return Classification(
             "SAME", 0.95, True,

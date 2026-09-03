@@ -12,13 +12,14 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .db import engine, get_db, initialize_database
-from .auth import AUTH_PROVIDER, AuthContext, optional_auth_context, router as auth_router
+from .auth import AuthContext, optional_auth_context, router as auth_router
 from .config import ENVIRONMENT
+from .enroll import issue_agent_token
 from .identity import register_computer, resolve_identity
 from .machine_auth import MachinePrincipal, require_machine
 from .models import Agent, Computer, Observation
 from .read_api import router as read_router
-from .schemas import AgentHeartbeatIn, IngestResult, ObservationIn
+from .schemas import AgentEnrollIn, AgentEnrollOut, AgentHeartbeatIn, IngestResult, ObservationIn
 
 
 @asynccontextmanager
@@ -69,8 +70,6 @@ def web_ui(
 
 @app.get("/login", include_in_schema=False, response_model=None)
 def login_page() -> FileResponse | RedirectResponse:
-    if AUTH_PROVIDER != "local":
-        return RedirectResponse("/api/v1/auth/oidc/start", status_code=303)
     return FileResponse(web_directory / "login.html")
 
 
@@ -119,7 +118,6 @@ def observation_hash_value(item: ObservationIn, column: str) -> str | None:
         "pnp_observation_sha256": ("pnp_observation_sha256", "pnp"),
         "media_identity_sha256": ("media_identity_sha256", "media_identity"),
         "media_state_sha256": ("media_state_sha256", "media_state"),
-        "observation_sha256": ("observation_sha256", "observation"),
     }
     hashes = item.hashes or {}
     device = item.device or {}
@@ -149,7 +147,6 @@ def observation_values(
         "pnp_observation_sha256": observation_hash_value(item, "pnp_observation_sha256"),
         "media_identity_sha256": observation_hash_value(item, "media_identity_sha256"),
         "media_state_sha256": observation_hash_value(item, "media_state_sha256"),
-        "observation_sha256": observation_hash_value(item, "observation_sha256"),
         "host": item.host,
         "session": item.session,
         "device": device,
@@ -163,6 +160,13 @@ def observation_values(
     }
 
 
+def require_ingest_machine(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> MachinePrincipal:
+    return require_machine(request, db)
+
+
 @app.get("/health/live")
 def health_live() -> dict[str, str]:
     return {"status": "ok"}
@@ -174,11 +178,20 @@ def health_ready(db: Session = Depends(get_db)) -> dict[str, str]:
     return {"status": "ok"}
 
 
+@app.post("/api/v1/agents/enroll", response_model=AgentEnrollOut)
+def agent_enroll(
+    request: Request,
+    payload: AgentEnrollIn,
+    db: Session = Depends(get_db),
+) -> AgentEnrollOut:
+    return issue_agent_token(request, payload, db)
+
+
 @app.post("/api/v1/agents/heartbeat", status_code=202)
 def agent_heartbeat(
     request: Request,
     payload: AgentHeartbeatIn,
-    principal: MachinePrincipal = Depends(require_machine),
+    principal: MachinePrincipal = Depends(require_ingest_machine),
     db: Session = Depends(get_db),
 ) -> dict:
     if principal.kind == "agent":
@@ -219,7 +232,7 @@ def ingest_observations(
     forwarded_agent_id: uuid.UUID | None = Header(
         default=None, alias="X-FlashControl-Forwarded-Agent-ID"
     ),
-    principal: MachinePrincipal = Depends(require_machine),
+    principal: MachinePrincipal = Depends(require_ingest_machine),
     db: Session = Depends(get_db),
 ) -> IngestResult:
     if principal.kind == "agent":

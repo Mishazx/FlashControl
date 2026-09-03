@@ -89,8 +89,7 @@ function Get-DeviceSignature($Document) {
     return [string]::Join("|", @(
         $device.hardware_stable_sha256,
         $device.media_identity_sha256,
-        $device.media_state_sha256,
-        $device.observation_sha256
+        $device.media_state_sha256
     ))
 }
 

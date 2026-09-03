@@ -44,5 +44,42 @@ class MachineMtlsTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 401)
 
 
+class ClientHostTests(unittest.TestCase):
+    def test_untrusted_peer_headers_are_ignored(self):
+        from app import machine_auth
+
+        incoming = request(
+            {"X-Real-IP": "203.0.113.10", "X-Forwarded-For": "198.51.100.20"},
+            "8.8.8.8",
+        )
+        with patch.object(machine_auth, "TRUSTED_PROXIES", ("172.30.0.0/24",)):
+            self.assertEqual(machine_auth.client_host(incoming), "8.8.8.8")
+            self.assertEqual(str(machine_auth.source_ip(incoming)), "8.8.8.8")
+
+    def test_trusted_nginx_real_ip_is_used_for_audit(self):
+        from app import machine_auth
+
+        incoming = request(
+            {
+                "X-Real-IP": "203.0.113.10",
+                "X-Forwarded-For": "198.51.100.20, 203.0.113.10",
+            },
+            "172.30.0.4",
+        )
+        with patch.object(machine_auth, "TRUSTED_PROXIES", ("172.30.0.0/24",)):
+            self.assertEqual(machine_auth.client_host(incoming), "203.0.113.10")
+            self.assertEqual(str(machine_auth.source_ip(incoming)), "172.30.0.4")
+
+    def test_forwarded_for_skips_trusted_hops(self):
+        from app import machine_auth
+
+        incoming = request(
+            {"X-Forwarded-For": "198.51.100.20, 203.0.113.10, 172.30.0.4"},
+            "172.30.0.4",
+        )
+        with patch.object(machine_auth, "TRUSTED_PROXIES", ("172.30.0.0/24",)):
+            self.assertEqual(machine_auth.client_host(incoming), "203.0.113.10")
+
+
 if __name__ == "__main__":
     unittest.main()

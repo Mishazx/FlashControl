@@ -1,5 +1,7 @@
 param(
     [string]$OutputDir = (Join-Path $PSScriptRoot "..\dist"),
+    [string]$ServerUrl = "",
+    [string]$HeartbeatUrl = "",
     [switch]$SkipDependencyInstall
 )
 
@@ -27,38 +29,21 @@ python -m PyInstaller `
     --name FlashControlAgentService `
     --hidden-import win32timezone `
     --hidden-import main `
-    --hidden-import delivery_queue `
-    --hidden-import observation_payload `
     --collect-all pywin32 `
     --distpath $OutputDir `
     --workpath $pyiWork `
     --specpath $pyiSpec `
     (Join-Path $root "service.py")
 
-python -m PyInstaller `
-    --noconfirm `
-    --clean `
-    --onefile `
-    --name FlashControlAgentBuild `
-    --distpath $OutputDir `
-    --workpath (Join-Path $buildRoot "pyinstaller-collector") `
-    --specpath (Join-Path $buildRoot "spec-collector") `
-    (Join-Path $root "main.py")
-
-python -m PyInstaller `
-    --noconfirm `
-    --clean `
-    --onefile `
-    --console `
-    --name FlashControlAgentDump `
-    --hidden-import main `
-    --hidden-import observation_payload `
-    --distpath $OutputDir `
-    --workpath (Join-Path $buildRoot "pyinstaller-dump") `
-    --specpath (Join-Path $buildRoot "spec-dump") `
-    (Join-Path $root "dump.py")
-
 $serviceBundle = Join-Path $OutputDir "FlashControlAgentService"
+$configPath = Join-Path $OutputDir "agent_config.json"
+Copy-Item (Join-Path $root "agent_config.example.json") $configPath -Force
+if ($ServerUrl) {
+    python -c "import json,sys; p=sys.argv[1]; d=json.load(open(p,encoding='utf-8')); d['server_url']=sys.argv[2]; json.dump(d, open(p,'w',encoding='utf-8'), indent=2); open(p,'a',encoding='utf-8').write(chr(10))" $configPath $ServerUrl
+}
+if ($HeartbeatUrl) {
+    python -c "import json,sys; p=sys.argv[1]; d=json.load(open(p,encoding='utf-8')); d['heartbeat_url']=sys.argv[2]; json.dump(d, open(p,'w',encoding='utf-8'), indent=2); open(p,'a',encoding='utf-8').write(chr(10))" $configPath $HeartbeatUrl
+}
 
 python -m PyInstaller `
     --noconfirm `
@@ -66,10 +51,10 @@ python -m PyInstaller `
     --onefile `
     --uac-admin `
     --name FlashControlAgentInstaller `
+    --hidden-import heartbeat `
     --distpath $OutputDir `
     --workpath (Join-Path $buildRoot "pyinstaller-installer") `
     --specpath (Join-Path $buildRoot "spec-installer") `
     --add-data "${serviceBundle};FlashControlAgentService" `
+    --add-data "${configPath};." `
     (Join-Path $root "installer.py")
-
-Copy-Item (Join-Path $root "agent_config.example.json") (Join-Path $OutputDir "agent_config.json") -Force

@@ -18,6 +18,11 @@ import urllib.request
 from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse
 
+try:
+    from heartbeat import persist_agent_id
+except ImportError:
+    from FlashControlAgent.heartbeat import persist_agent_id
+
 
 SERVICE_NAME = "FlashControlAgent"
 SERVICE_EXE_NAME = "FlashControlAgentService.exe"
@@ -56,15 +61,93 @@ def queue_path(install_dir):
     return os.path.join(state_dir(install_dir), "FlashControlAgent.queue.db")
 
 
-def migrate_queue_file(install_dir):
-    old_path = os.path.join(os.path.abspath(install_dir), "FlashControlAgent.queue.db")
-    new_path = queue_path(install_dir)
+def agent_id_file_path(install_dir):
+    return os.path.join(state_dir(install_dir), "FlashControlAgent.id")
+
+
+def machine_token_file_path(install_dir):
+    return os.path.join(state_dir(install_dir), "FlashControlAgent.token")
+
+
+def migrate_state_file(install_dir, filename):
+    old_path = os.path.join(os.path.abspath(install_dir), filename)
+    new_path = os.path.join(state_dir(install_dir), filename)
     if not os.path.exists(old_path) or os.path.exists(new_path):
         return
     state_folder = os.path.dirname(new_path)
     if state_folder and not os.path.exists(state_folder):
         os.makedirs(state_folder)
     shutil.move(old_path, new_path)
+
+
+def migrate_queue_file(install_dir):
+    migrate_state_file(install_dir, "FlashControlAgent.queue.db")
+
+
+def migrate_agent_id_file(install_dir):
+    migrate_state_file(install_dir, "FlashControlAgent.id")
+
+
+def optional_text(value):
+    return (value or "").strip()
+
+
+def bundled_agent_config():
+    candidates = [
+        os.path.join(resource_dir(), "agent_config.json"),
+        os.path.join(app_dir(), "agent_config.json"),
+    ]
+    for path in candidates:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, "r") as handle:
+                loaded = json.load(handle)
+        except Exception:
+            continue
+        if isinstance(loaded, dict):
+            return loaded
+    return {}
+
+
+def overlay_text(cli_value, bundled_value):
+    cli = optional_text(cli_value)
+    if cli:
+        return cli
+    return optional_text(bundled_value)
+
+
+def build_agent_config(args, install_dir, bundled=None):
+    bundled = bundled or {}
+    return {
+        "server_url": overlay_text(getattr(args, "server_url", ""), bundled.get("server_url")),
+        "interval_seconds": args.interval_seconds,
+        "request_timeout_seconds": args.request_timeout_seconds,
+        "queue_file": queue_path(install_dir),
+        "queue_max_items": 100000,
+        "retry_interval_seconds": 30,
+        "retry_max_seconds": 3600,
+        "delivery_batch_size": 100,
+        "heartbeat_url": overlay_text(
+            getattr(args, "heartbeat_url", ""), bundled.get("heartbeat_url")
+        ),
+        "enroll_url": overlay_text(getattr(args, "enroll_url", ""), bundled.get("enroll_url")),
+        "agent_id_file": agent_id_file_path(install_dir),
+        "machine_token": overlay_text(
+            getattr(args, "machine_token", ""), bundled.get("machine_token")
+        ),
+        "machine_token_file": machine_token_file_path(install_dir),
+        "ca_file": overlay_text(getattr(args, "ca_file", ""), bundled.get("ca_file")),
+        "client_cert_file": overlay_text(
+            getattr(args, "client_cert_file", ""), bundled.get("client_cert_file")
+        ),
+        "client_key_file": overlay_text(
+            getattr(args, "client_key_file", ""), bundled.get("client_key_file")
+        ),
+        "collector_args": [],
+        "include_non_usb": bool(getattr(args, "include_non_usb", False)),
+        "log_file": "FlashControlAgent.log",
+    }
 
 
 def resource_dir():
@@ -234,29 +317,33 @@ def install(args):
     if not is_admin():
         raise RuntimeError("Administrator rights are required to install a Windows service.")
 
-    validate_server_url(args.server_url, min(int(args.request_timeout_seconds or 30), 10))
+    bundled = bundled_agent_config()
+    config = build_agent_config(args, os.path.abspath(args.install_dir), bundled)
+    validate_server_url(config.get("server_url"), min(int(args.request_timeout_seconds or 30), 10))
 
     install_dir = os.path.abspath(args.install_dir)
     stop_service_processes()
     migrate_queue_file(install_dir)
+    migrate_agent_id_file(install_dir)
     service_dst = copy_service_files(install_dir)
     LOGGER.info("Copied service files to %s", install_dir)
 
-    config = {
-        "server_url": args.server_url,
-        "interval_seconds": args.interval_seconds,
-        "request_timeout_seconds": args.request_timeout_seconds,
-        "queue_file": queue_path(install_dir),
-        "queue_max_items": 100000,
-        "retry_interval_seconds": 30,
-        "retry_max_seconds": 3600,
-        "delivery_batch_size": 100,
-        "collector_args": [],
-        "include_non_usb": bool(args.include_non_usb),
-        "log_file": "FlashControlAgent.log",
-    }
+    try:
+        agent_id = persist_agent_id(
+            agent_id_file_path(install_dir),
+            optional_text(getattr(args, "agent_id", "")),
+        )
+    except ValueError:
+        raise RuntimeError("--agent-id must be a UUID") from None
     write_json(os.path.join(install_dir, "agent_config.json"), config)
     LOGGER.info("Wrote config to %s", os.path.join(install_dir, "agent_config.json"))
+    LOGGER.info("Agent identity %s", agent_id)
+    if config.get("server_url") and not config.get("machine_token") and not config.get("client_cert_file"):
+        LOGGER.info("Collector URL baked in; agent will enroll and receive its own token")
+    if config.get("machine_token"):
+        LOGGER.info("Development machine token configured")
+    if config.get("client_cert_file"):
+        LOGGER.info("mTLS client certificate configured: %s", config["client_cert_file"])
 
     if service_exists():
         LOGGER.info("Service already exists, removing old copy")
@@ -324,6 +411,13 @@ def build_parser():
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--install-dir", default=DEFAULT_INSTALL_DIR)
     common.add_argument("--server-url", default="")
+    common.add_argument("--machine-token", default="")
+    common.add_argument("--agent-id", default="")
+    common.add_argument("--heartbeat-url", default="")
+    common.add_argument("--enroll-url", default="")
+    common.add_argument("--ca-file", default="")
+    common.add_argument("--client-cert-file", default="")
+    common.add_argument("--client-key-file", default="")
     common.add_argument("--interval-seconds", type=int, default=3600)
     common.add_argument("--request-timeout-seconds", type=int, default=30)
     common.add_argument("--include-non-usb", action="store_true")

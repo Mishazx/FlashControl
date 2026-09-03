@@ -1,4 +1,4 @@
-import os
+﻿import os
 import subprocess
 import sys
 import unittest
@@ -26,14 +26,11 @@ class ProductionConfigurationTests(unittest.TestCase):
     def run_config(self, **values):
         environment = os.environ.copy()
         for name in (
-            "FLASHCONTROL_ENVIRONMENT", "FLASHCONTROL_DATABASE_URL",
-            "FLASHCONTROL_AUTH_PROVIDER", "FLASHCONTROL_OIDC_ISSUER",
-            "FLASHCONTROL_OIDC_CLIENT_ID",
-            "FLASHCONTROL_OIDC_REDIRECT_URI", "FLASHCONTROL_OIDC_ADMIN_GROUPS",
-            "FLASHCONTROL_OIDC_SECURITY_GROUPS", "FLASHCONTROL_OIDC_AUDITOR_GROUPS",
-            "FLASHCONTROL_OIDC_DEFAULT_ROLE",
-            "FLASHCONTROL_MACHINE_AUTH_MODE", "FLASHCONTROL_DEV_MACHINE_TOKEN",
+            "FLASHCONTROL_ENVIRONMENT", "FLASHCONTROL_DATABASE_URL", "FLASHCONTROL_LOG_LEVEL",
+            "FLASHCONTROL_SESSION_HOURS", "FLASHCONTROL_MACHINE_AUTH_MODE",
+            "FLASHCONTROL_DEV_MACHINE_TOKEN", "FLASHCONTROL_TRUSTED_PROXIES",
             "FLASHCONTROL_TRUSTED_MTLS_PROXIES", "FLASHCONTROL_MTLS_IDENTITIES",
+            "FLASHCONTROL_ENROLL_NETWORKS",
         ):
             environment.pop(name, None)
         environment.update(values)
@@ -45,38 +42,24 @@ class ProductionConfigurationTests(unittest.TestCase):
             text=True,
         )
 
-    def test_production_rejects_local_auth(self):
+    def test_production_rejects_sqlite(self):
         result = self.run_config(
             FLASHCONTROL_ENVIRONMENT="production",
-            FLASHCONTROL_DATABASE_URL="postgresql+psycopg://example",
-            FLASHCONTROL_AUTH_PROVIDER="local",
-        )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("must be oidc", result.stderr)
-
-    def test_production_requires_oidc_settings(self):
-        result = self.run_config(
-            FLASHCONTROL_ENVIRONMENT="production",
-            FLASHCONTROL_DATABASE_URL="postgresql+psycopg://example",
-            FLASHCONTROL_AUTH_PROVIDER="oidc",
-        )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("issuer and client ID are required", result.stderr)
-
-    def test_production_accepts_explicit_oidc_settings(self):
-        result = self.run_config(
-            FLASHCONTROL_ENVIRONMENT="production",
-            FLASHCONTROL_DATABASE_URL="postgresql+psycopg://example",
-            FLASHCONTROL_AUTH_PROVIDER="oidc",
-            FLASHCONTROL_OIDC_ISSUER="https://idp.example/tenant",
-            FLASHCONTROL_OIDC_CLIENT_ID="flashcontrol",
-            FLASHCONTROL_OIDC_REDIRECT_URI="https://flash.example/api/v1/auth/oidc/callback",
-            FLASHCONTROL_OIDC_ADMIN_GROUPS="flash-admins",
+            FLASHCONTROL_DATABASE_URL="sqlite:///./flashcontrol-dev.db",
             FLASHCONTROL_MACHINE_AUTH_MODE="mtls",
             FLASHCONTROL_TRUSTED_MTLS_PROXIES="127.0.0.1/32",
-            FLASHCONTROL_MTLS_IDENTITIES=(
-                '{"aabb":"agent:11111111-1111-1111-1111-111111111111"}'
-            ),
+            FLASHCONTROL_MTLS_IDENTITIES='{"aabb":"agent:11111111-1111-1111-1111-111111111111"}',
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("SQLite is not allowed in production", result.stderr)
+
+    def test_production_accepts_postgres_and_mtls(self):
+        result = self.run_config(
+            FLASHCONTROL_ENVIRONMENT="production",
+            FLASHCONTROL_DATABASE_URL="postgresql+psycopg://example",
+            FLASHCONTROL_MACHINE_AUTH_MODE="mtls",
+            FLASHCONTROL_TRUSTED_MTLS_PROXIES="127.0.0.1/32",
+            FLASHCONTROL_MTLS_IDENTITIES='{"aabb":"agent:11111111-1111-1111-1111-111111111111"}',
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 

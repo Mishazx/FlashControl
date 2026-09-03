@@ -1,29 +1,23 @@
-import datetime
+﻿import datetime
 import hashlib
 import hmac
 import secrets
 import uuid
 from dataclasses import dataclass
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
-from fastapi.responses import RedirectResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from .config import (
-    AUTH_PROVIDER, ENVIRONMENT, OIDC_ADMIN_GROUPS, OIDC_AUDITOR_GROUPS,
-    OIDC_DEFAULT_ROLE, OIDC_GROUP_CLAIM, OIDC_ISSUER, OIDC_SECURITY_GROUPS,
-    SESSION_HOURS,
-)
+from .config import ENVIRONMENT, SESSION_HOURS
 from .db import get_db
-from .models import AuditLog, AuthSession, AuthUser, OidcIdentity, OidcTransaction
-from .oidc import FLOW_TTL, OidcError, authorization_url, exchange_code, redirect_uri_for
+from .machine_auth import client_host
+from .models import AuditLog, AuthSession, AuthUser
 
 
 SESSION_COOKIE = "flashcontrol_session"
 CSRF_COOKIE = "flashcontrol_csrf"
-OIDC_FLOW_COOKIE = "flashcontrol_oidc_flow"
 ALLOWED_ROLES = ("admin", "security", "auditor")
 READ_ROLES = frozenset(ALLOWED_ROLES)
 PASSWORD_N = 2 ** 14
@@ -50,14 +44,17 @@ class AuthContext:
     session: AuthSession
 
 
+
 def utcnow() -> datetime.datetime:
     return datetime.datetime.now(datetime.timezone.utc)
+
 
 
 def as_utc(value: datetime.datetime) -> datetime.datetime:
     if value.tzinfo is None:
         return value.replace(tzinfo=datetime.timezone.utc)
     return value.astimezone(datetime.timezone.utc)
+
 
 
 def normalize_username(value: str) -> str:
@@ -67,8 +64,10 @@ def normalize_username(value: str) -> str:
     return username
 
 
+
 def hash_secret(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
 
 
 def hash_password(password: str) -> str:
@@ -82,6 +81,7 @@ def hash_password(password: str) -> str:
     return "scrypt${}${}${}${}${}".format(
         PASSWORD_N, PASSWORD_R, PASSWORD_P, salt.hex(), derived.hex()
     )
+
 
 
 def verify_password(password: str, encoded: str | None) -> bool:
@@ -100,9 +100,8 @@ def verify_password(password: str, encoded: str | None) -> bool:
         return False
 
 
+
 def create_local_user(db: Session, username: str, password: str, role: str) -> AuthUser:
-    if AUTH_PROVIDER != "local":
-        raise RuntimeError("local users are disabled for the configured auth provider")
     normalized = normalize_username(username)
     if role not in ALLOWED_ROLES:
         raise ValueError("role must be one of: %s" % ", ".join(ALLOWED_ROLES))
@@ -119,6 +118,7 @@ def create_local_user(db: Session, username: str, password: str, role: str) -> A
     return user
 
 
+
 def audit(db: Session, request: Request, action: str, success: bool,
           user: AuthUser | None = None, username: str | None = None,
           details: dict | None = None) -> None:
@@ -127,9 +127,10 @@ def audit(db: Session, request: Request, action: str, success: bool,
         username=user.username if user else username,
         action=action,
         success=success,
-        source_ip=request.client.host if request.client else None,
+        source_ip=client_host(request),
         details=details or {},
     ))
+
 
 
 def _session_from_request(request: Request, db: Session) -> AuthContext | None:
@@ -152,10 +153,12 @@ def _session_from_request(request: Request, db: Session) -> AuthContext | None:
     return AuthContext(user=user, session=auth_session)
 
 
+
 def optional_auth_context(
     request: Request, db: Session = Depends(get_db)
 ) -> AuthContext | None:
     return _session_from_request(request, db)
+
 
 
 def require_auth_context(
@@ -167,10 +170,12 @@ def require_auth_context(
     return context
 
 
+
 def require_read_user(context: AuthContext = Depends(require_auth_context)) -> AuthUser:
     if context.user.role not in READ_ROLES:
         raise HTTPException(status_code=403, detail="insufficient role")
     return context.user
+
 
 
 def require_roles(*roles: str):
@@ -182,6 +187,7 @@ def require_roles(*roles: str):
         return context.user
 
     return dependency
+
 
 
 def require_csrf(
@@ -200,6 +206,7 @@ def require_csrf(
     return context
 
 
+
 def _set_auth_cookies(response: Response, token: str, csrf_token: str) -> None:
     secure = ENVIRONMENT == "production"
     max_age = SESSION_HOURS * 3600
@@ -213,9 +220,11 @@ def _set_auth_cookies(response: Response, token: str, csrf_token: str) -> None:
     )
 
 
+
 def clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(SESSION_COOKIE, path="/")
     response.delete_cookie(CSRF_COOKIE, path="/")
+
 
 
 def _create_session(db: Session, request: Request, user: AuthUser) -> tuple[str, str]:
@@ -228,75 +237,11 @@ def _create_session(db: Session, request: Request, user: AuthUser) -> tuple[str,
         csrf_hash=hash_secret(csrf_token), created_at_utc=now,
         expires_at_utc=now + datetime.timedelta(hours=SESSION_HOURS),
         last_seen_at_utc=now,
-        source_ip=request.client.host if request.client else None,
+        source_ip=client_host(request),
         user_agent=request.headers.get("user-agent", "")[:512],
     ))
     user.last_login_at_utc = now
     return token, csrf_token
-
-
-def role_for_groups(groups: list[str]) -> str | None:
-    normalized = {item.casefold() for item in groups}
-    for role, allowed in (
-        ("admin", OIDC_ADMIN_GROUPS),
-        ("security", OIDC_SECURITY_GROUPS),
-        ("auditor", OIDC_AUDITOR_GROUPS),
-    ):
-        if normalized & allowed:
-            return role
-    return OIDC_DEFAULT_ROLE or None
-
-
-def _claim_groups(claims: dict) -> list[str]:
-    value = claims.get(OIDC_GROUP_CLAIM, [])
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list) and all(isinstance(item, str) for item in value):
-        return list(dict.fromkeys(value))
-    raise OidcError("OIDC group claim has an invalid format")
-
-
-def _oidc_username(claims: dict) -> str:
-    for name in ("preferred_username", "upn", "email"):
-        value = claims.get(name)
-        if isinstance(value, str):
-            try:
-                return normalize_username(value)
-            except ValueError:
-                pass
-    return "oidc-" + hashlib.sha256(claims["sub"].encode()).hexdigest()[:16]
-
-
-def _upsert_oidc_user(db: Session, claims: dict, role: str, groups: list[str]) -> AuthUser:
-    subject = claims["sub"]
-    identity = db.scalar(select(OidcIdentity).where(
-        OidcIdentity.issuer == OIDC_ISSUER.rstrip("/"),
-        OidcIdentity.subject == subject,
-    ))
-    now = utcnow()
-    if identity is not None:
-        user = db.get(AuthUser, identity.user_id)
-        if user is None:
-            raise OidcError("OIDC identity references a missing user")
-        identity.groups = groups
-        identity.last_seen_at_utc = now
-        user.role = role
-        return user
-
-    username = _oidc_username(claims)
-    if db.scalar(select(AuthUser).where(AuthUser.username == username)) is not None:
-        suffix = hashlib.sha256((OIDC_ISSUER + subject).encode()).hexdigest()[:8]
-        username = (username[:119] + "~" + suffix)
-    user = AuthUser(
-        id=uuid.uuid4(), username=username, password_hash=None, role=role, enabled=True,
-    )
-    db.add(user)
-    db.flush()
-    db.add(OidcIdentity(
-        id=uuid.uuid4(), user_id=user.id, issuer=OIDC_ISSUER.rstrip("/"),
-        subject=subject, groups=groups, created_at_utc=now, last_seen_at_utc=now,
-    ))
-    return user
 
 
 router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
@@ -305,13 +250,11 @@ router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
 @router.post("/login")
 def login(payload: LoginRequest, request: Request, response: Response,
           db: Session = Depends(get_db)) -> dict:
-    if AUTH_PROVIDER != "local":
-        raise HTTPException(status_code=501, detail="OIDC login is not implemented")
     try:
         username = normalize_username(payload.username)
     except ValueError:
         username = "invalid"
-    source_ip = request.client.host if request.client else None
+    source_ip = client_host(request)
     since = utcnow() - LOGIN_WINDOW
     failed_count = db.scalar(
         select(func.count()).select_from(AuditLog)
@@ -338,103 +281,6 @@ def login(payload: LoginRequest, request: Request, response: Response,
     db.commit()
     _set_auth_cookies(response, token, csrf_token)
     return {"username": user.username, "role": user.role}
-
-
-@router.get("/oidc/start", include_in_schema=False)
-async def oidc_start(request: Request, db: Session = Depends(get_db)) -> RedirectResponse:
-    if AUTH_PROVIDER != "oidc":
-        raise HTTPException(status_code=404, detail="OIDC authentication is disabled")
-    state = secrets.token_urlsafe(32)
-    browser_secret = secrets.token_urlsafe(32)
-    nonce = secrets.token_urlsafe(32)
-    verifier = secrets.token_urlsafe(64)
-    now = utcnow()
-    db.execute(delete(OidcTransaction).where(OidcTransaction.expires_at_utc <= now))
-    db.add(OidcTransaction(
-        id=uuid.uuid4(), state_hash=hash_secret(state),
-        browser_hash=hash_secret(browser_secret), nonce=nonce,
-        code_verifier=verifier, created_at_utc=now, expires_at_utc=now + FLOW_TTL,
-    ))
-    db.commit()
-    try:
-        target = await authorization_url(
-            state, nonce, verifier, redirect_uri_for(str(request.base_url))
-        )
-    except OidcError as exc:
-        audit(db, request, "auth.oidc.start", False, details={"reason": str(exc)})
-        db.commit()
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    response = RedirectResponse(target, status_code=303)
-    response.set_cookie(
-        OIDC_FLOW_COOKIE, browser_secret, max_age=int(FLOW_TTL.total_seconds()),
-        httponly=True, secure=ENVIRONMENT == "production", samesite="lax", path="/",
-    )
-    return response
-
-
-@router.get("/oidc/callback", include_in_schema=False)
-async def oidc_callback(
-    request: Request,
-    code: str | None = Query(default=None, max_length=4096),
-    state: str | None = Query(default=None, max_length=512),
-    error: str | None = Query(default=None, max_length=256),
-    db: Session = Depends(get_db),
-) -> RedirectResponse:
-    if AUTH_PROVIDER != "oidc":
-        raise HTTPException(status_code=404, detail="OIDC authentication is disabled")
-    if error or not code or not state:
-        audit(db, request, "auth.login", False, details={"reason": "provider_rejected"})
-        db.commit()
-        raise HTTPException(status_code=401, detail="OIDC authentication was rejected")
-    transaction = db.scalar(select(OidcTransaction).where(
-        OidcTransaction.state_hash == hash_secret(state)
-    ))
-    browser_secret = request.cookies.get(OIDC_FLOW_COOKIE, "")
-    browser_matches = bool(
-        transaction and browser_secret and hmac.compare_digest(
-            transaction.browser_hash, hash_secret(browser_secret)
-        )
-    )
-    if (
-        transaction is None
-        or as_utc(transaction.expires_at_utc) <= utcnow()
-        or not browser_matches
-    ):
-        audit(db, request, "auth.login", False, details={
-            "provider": "oidc", "reason": "invalid_or_expired_state",
-        })
-        db.commit()
-        raise HTTPException(status_code=401, detail="OIDC state is invalid or expired")
-    nonce, verifier = transaction.nonce, transaction.code_verifier
-    db.delete(transaction)
-    db.commit()  # Consume state before the external token request; callbacks are one-shot.
-    try:
-        claims = await exchange_code(
-            code, verifier, nonce, redirect_uri_for(str(request.base_url))
-        )
-        groups = _claim_groups(claims)
-        role = role_for_groups(groups)
-        if role is None:
-            raise OidcError("OIDC account is not assigned to a FlashControl role")
-        user = _upsert_oidc_user(db, claims, role, groups)
-        if not user.enabled:
-            raise OidcError("OIDC account is disabled")
-        token, csrf_token = _create_session(db, request, user)
-        audit(db, request, "auth.login", True, user=user, details={
-            "provider": "oidc", "role": role,
-        })
-        db.commit()
-    except OidcError as exc:
-        db.rollback()
-        audit(db, request, "auth.login", False, details={
-            "provider": "oidc", "reason": str(exc),
-        })
-        db.commit()
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    response = RedirectResponse("/", status_code=303)
-    _set_auth_cookies(response, token, csrf_token)
-    response.delete_cookie(OIDC_FLOW_COOKIE, path="/")
-    return response
 
 
 @router.get("/me")

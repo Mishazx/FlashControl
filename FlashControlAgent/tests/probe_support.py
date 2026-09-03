@@ -67,19 +67,6 @@ def make_storage_descriptor(
     return bytes(data)
 
 
-def make_vpd83_buffer(identifiers):
-    parts = []
-    for index, item in enumerate(identifiers):
-        code_set, ident_type, association, value = item[:4]
-        next_offset = item[4] if len(item) > 4 else 16 + len(value)
-        parts.append(
-            struct.pack("<IIHHI", code_set, ident_type, len(value), next_offset, association) +
-            value
-        )
-    payload = b"".join(parts)
-    return struct.pack("<III", 1, 12 + len(payload), len(identifiers)) + payload
-
-
 def make_mbr_layout_buffer(entries, signature=0xA1B2C3D4, checksum=0x01020304):
     entry_size = 144
     data = bytearray(48 + (entry_size * len(entries)))
@@ -202,24 +189,6 @@ def base_record():
                 "volume_serial": "EFGH5678",
             },
         ],
-        "vpd83": [
-            {
-                "code_set": 1,
-                "type": 3,
-                "association": 0,
-                "identifier_size": 4,
-                "value_ascii": "ABCD",
-                "value_hex": "41424344",
-            },
-            {
-                "code_set": 1,
-                "type": 3,
-                "association": 1,
-                "identifier_size": 4,
-                "value_ascii": None,
-                "value_hex": "31323334",
-            },
-        ],
         "pnp": {
             "usb": {
                 "device_instance_id": "USB\\VID_1234&PID_5678\\ABCDEF",
@@ -261,21 +230,16 @@ def base_record():
             "partition_layout": True,
             "volume_information": True,
             "pnp_tree": True,
-            "vpd80": False,
-            "vpd83": True,
         },
         "capability_status": {
             "storage_descriptor": "available",
             "geometry": "available",
             "partition_layout": "available",
             "volume_information": "available",
-            "vpd80": "not_implemented",
-            "vpd83": "available",
             "pnp_tree": "available",
         },
         "collector_errors": {
             "geometry": None,
             "partition_layout": None,
-            "vpd83": None,
         },
     }

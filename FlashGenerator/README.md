@@ -175,8 +175,7 @@ python3 analyze_results.py results/gpt_dual_partition.json
 
 - `BusTypeUsb` (7)
 - partition style / counts / volumes
-- `fingerprint_version == 2`
-- все 5 hash-полей
+- все 4 hash-поля
 - comparison `collision_media_a` vs `collision_media_b`
 - comparison `hardware_variant_a` vs `hardware_variant_b`
 - repeatability для `baseline_mbr_fat32` (2 observation в одном файле)

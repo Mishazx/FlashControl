@@ -34,7 +34,6 @@ class Observation(Base):
     pnp_observation_sha256: Mapped[str | None] = mapped_column(String(64))
     media_identity_sha256: Mapped[str | None] = mapped_column(String(64))
     media_state_sha256: Mapped[str | None] = mapped_column(String(64))
-    observation_sha256: Mapped[str | None] = mapped_column(String(64))
 
     json_type = JSON().with_variant(JSONB, "postgresql")
     host: Mapped[dict] = mapped_column(json_type, nullable=False)
@@ -83,6 +82,9 @@ class Agent(Base):
     selected_route: Mapped[str] = mapped_column(String(32), nullable=False)
     proxy_id: Mapped[object | None] = mapped_column(Uuid(as_uuid=True))
     source_ip: Mapped[str | None] = mapped_column(String(128))
+    token_hash: Mapped[str | None] = mapped_column(String(64))
+    enroll_source_ip: Mapped[str | None] = mapped_column(String(128))
+    enrolled_at_utc: Mapped[datetime.datetime | None] = mapped_column(DateTime(timezone=True))
     first_seen_at_utc: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     last_seen_at_utc: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
@@ -170,33 +172,6 @@ class AuthSession(Base):
     last_seen_at_utc: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source_ip: Mapped[str | None] = mapped_column(String(128))
     user_agent: Mapped[str | None] = mapped_column(String(512))
-
-
-class OidcIdentity(Base):
-    __tablename__ = "oidc_identities"
-    __table_args__ = (UniqueConstraint("issuer", "subject", name="uq_oidc_identity_subject"),)
-
-    id: Mapped[object] = mapped_column(Uuid(as_uuid=True), primary_key=True)
-    user_id: Mapped[object] = mapped_column(
-        Uuid(as_uuid=True), ForeignKey("auth_users.id"), nullable=False, unique=True
-    )
-    issuer: Mapped[str] = mapped_column(String(1024), nullable=False)
-    subject: Mapped[str] = mapped_column(String(512), nullable=False)
-    groups: Mapped[list] = mapped_column(json_type, nullable=False)
-    created_at_utc: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    last_seen_at_utc: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-
-
-class OidcTransaction(Base):
-    __tablename__ = "oidc_transactions"
-
-    id: Mapped[object] = mapped_column(Uuid(as_uuid=True), primary_key=True)
-    state_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
-    browser_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    nonce: Mapped[str] = mapped_column(String(128), nullable=False)
-    code_verifier: Mapped[str] = mapped_column(String(128), nullable=False)
-    created_at_utc: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False)
-    expires_at_utc: Mapped[datetime.datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
 
 
 class AuditLog(Base):

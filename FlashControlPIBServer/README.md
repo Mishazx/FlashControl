@@ -40,6 +40,9 @@ PostgreSQL and requires applying migrations explicitly, in numeric order:
 migrations/001_initial.sql
 migrations/002_identity_engine.sql
 migrations/003_auth.sql
+migrations/005_agents.sql
+migrations/006_machine_auth.sql
+migrations/007_agent_enroll.sql
 ```
 
 Every accepted Observation is linked to a computer, evaluated by the identity
@@ -51,7 +54,7 @@ reasons so rules can be audited and recalculated later.
 Identity linking is deliberately conservative:
 
 - `SAME` may link automatically when hardware and media agree on the same
-  computer, or when matching VPD83 is supported by the full hardware evidence;
+  computer;
 - `LIKELY_SAME` records a candidate but does not merge devices automatically;
 - simultaneous matching evidence on different computers is recorded as
   `SERIAL_COLLISION` and never merged;
@@ -109,34 +112,24 @@ Available roles:
 - `security`: read audit data and administrative audit log;
 - `auditor`: read-only USB audit data without the administrative audit log.
 
-Production rejects SQLite and local authentication. Configure the provider's
-discovery issuer, client ID, fixed callback URI, and at least one group-to-role
-mapping. The login uses Authorization Code Flow with PKCE, browser-bound
-one-time server-side state, nonce validation, discovery/JWKS signature verification, strict issuer
-and audience checks, and short-lived login transactions. Access and refresh
-tokens are never persisted.
+Production rejects SQLite. Authentication is local user management with salted `scrypt` hashes and the same session/CSRF flow in every environment. Create the first account interactively:
 
-```text
-FLASHCONTROL_OIDC_ISSUER=https://idp.example/tenant
-FLASHCONTROL_OIDC_CLIENT_ID=flashcontrol
-FLASHCONTROL_OIDC_REDIRECT_URI=https://flashcontrol.example/api/v1/auth/oidc/callback
-FLASHCONTROL_OIDC_ADMIN_GROUPS=flashcontrol-admins
-FLASHCONTROL_OIDC_SECURITY_GROUPS=flashcontrol-security
-FLASHCONTROL_OIDC_AUDITOR_GROUPS=flashcontrol-auditors
+```powershell
+python -m app.manage_user create --username admin --role admin
 ```
-
-`FLASHCONTROL_OIDC_CLIENT_SECRET` is optional for public clients using PKCE and
-required when the identity provider registers FlashControl as a confidential
-client. Group values may be names or immutable directory object IDs. If the
-provider uses another claim, set `FLASHCONTROL_OIDC_GROUP_CLAIM`. When multiple
-groups match, the strongest role wins: admin, then security, then auditor.
-Accounts without a mapping are denied; `FLASHCONTROL_OIDC_DEFAULT_ROLE` exists
-only for deployments that intentionally want a fallback role.
 
 ## Agent heartbeat
 
 The Windows service keeps a stable random `agent_id` in
-`FlashControlAgent.id` and reports health to `POST /api/v1/agents/heartbeat`.
+`FlashControlAgentState/FlashControlAgent.id`. On first start it calls
+`POST /api/v1/agents/enroll` with hostname, domain and current IPs. Main
+issues a per-agent token if the source address is in
+`FLASHCONTROL_ENROLL_NETWORKS` (in development/test an empty list allows
+local enroll). The token is stored hashed; only that agent UUID can use it,
+and it stays bound to the computer that enrolled.
+
+Ingest still accepts the shared `FLASHCONTROL_DEV_MACHINE_TOKEN` so dump
+helpers keep working. Production refuses token mode and requires mTLS.
 The server records its version, current IPs, delivery queue size, selected
 route, and last-seen time. The Web UI exposes online/offline agents and queue
 backlogs. Configure `heartbeat_interval_seconds` (minimum 15 seconds); the
