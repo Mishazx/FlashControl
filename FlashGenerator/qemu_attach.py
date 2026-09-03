@@ -83,17 +83,16 @@ def qemu_monitor_quote(value):
 
 def build_drive_add(drive_id, image_path, attach):
     parts = [
-        "drive_add 0",
+        "file=%s" % qemu_monitor_quote(image_path),
         "if=none",
         "id=%s" % drive_id,
-        "file=%s" % qemu_monitor_quote(image_path),
         "format=raw",
         "readonly=off",
     ]
     drive_serial = attach.get("drive_serial")
     if drive_serial:
         parts.append("serial=%s" % qemu_monitor_quote(drive_serial))
-    return ",".join(parts)
+    return "drive_add 0 " + ",".join(parts)
 
 
 def build_device_add_variants(dev_id, drive_id, bus, attach):
