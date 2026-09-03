@@ -80,6 +80,40 @@ QEMU_DRIVE_SERIAL=STOR-OVERRIDE-99 \
 sudo ./attach.sh output/baseline_mbr_fat32.img
 ```
 
+### Интерактивное подключение
+
+`attach.sh` без аргумента показывает пронумерованное меню по всем
+`output/*.img` (серийники и identити читаются из `<image>.json`), после чего
+можно выбрать пункт цифрой — образ подключится автоматически, `img` и `json`
+вводить не нужно:
+
+```bash
+sudo ./attach.sh
+#   1  baseline_mbr_fat32   FG-...   STOR-...   0781:5583  on
+#   ...
+#   Pick a number (1-15):
+```
+
+**Первый аргумент — это VMID.** Если он число, он принимается как VMID
+(default 5000), а образ выбирается дальше:
+
+```bash
+sudo ./attach.sh 5010                  # VM 5010 + меню образа
+sudo ./attach.sh 5010 gpt_dual_partition   # VM 5010 + конкретный профиль
+sudo ./attach.sh gpt_dual_partition     # VM 5000 + конкретный профиль
+```
+
+Работает и прямой вызов: путь к `.img` или имя профиля — manifest `.json`
+подхватывается автоматически (серийники/VID/PID при монтировании).
+
+`detach.sh` отцепляет по VMID — первым аргументом или переменной окружения;
+без него при нескольких сохранённых состояниях даёт выбрать VM:
+
+```bash
+sudo ./detach.sh 5010        # отцепить у VM 5010
+sudo ./detach.sh             # выбрать VM из меню (если состояний >1)
+```
+
 После `generate --force` manifest содержит `qemu_attach` — `attach.sh` подхватывает автоматически.
 
 **Comparisons в suite:**

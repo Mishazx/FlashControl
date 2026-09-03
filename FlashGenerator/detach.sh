@@ -5,16 +5,62 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="${SCRIPT_DIR}/.state"
 VMID="${VMID:-5000}"
-STATE_FILE="${STATE_DIR}/${VMID}.last"
 
 usage() {
     cat <<'EOF'
 Usage:
-  sudo ./detach.sh
+  sudo ./detach.sh            interactive: pick an attached image to detach
+  sudo ./detach.sh <VMID>     detach last attachment for a specific VM
 
 Environment:
   VMID=5000   Proxmox VM id (default: 5000)
 EOF
+}
+
+# Interactive: list every recorded attachment state (per VM) and let the user
+# pick one. Prints the chosen VMID.
+pick_state_interactive() {
+    local state
+    local vms=()
+    shopt -s nullglob
+    for state in "${STATE_DIR}"/*.last; do
+        [[ -f "${state}" ]] || continue
+        vms+=("$(basename "${state}" .last)")
+    done
+    shopt -u nullglob
+    if [[ "${#vms[@]}" -eq 0 ]]; then
+        echo "error: no attachment state recorded" >&2
+        exit 1
+    fi
+    if [[ "${#vms[@]}" -eq 1 ]]; then
+        echo "${vms[0]}"
+        return
+    fi
+    echo "Recorded attachments:"
+    echo ""
+    local idx=0
+    local v
+    for v in "${vms[@]}"; do
+        idx=$((idx + 1))
+        local desc=""
+        if [[ -r "${STATE_DIR}/${v}.last" ]]; then
+            desc="$(grep -E '^(IMAGE|DRIVE_ID)=' "${STATE_DIR}/${v}.last" | tr '\n' ' ')"
+        fi
+        printf '  %-3d VM %-6s %s\n' "${idx}" "${v}" "${desc}"
+    done
+    echo ""
+    local selection
+    read -r -p "Pick a number (1-${idx}) or hit Enter to cancel: " selection
+    if [[ -z "${selection}" ]]; then
+        echo "cancelled."
+        exit 0
+    fi
+    if [[ "${selection}" =~ ^[0-9]+$ ]] && (( selection >= 1 && selection <= idx )); then
+        echo "${vms[$((selection-1))]}"
+        return
+    fi
+    echo "error: invalid selection ${selection}" >&2
+    exit 1
 }
 
 require_root() {
@@ -87,6 +133,18 @@ if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
 fi
 
 require_root
+
+# The VMID comes from the first argument when present, otherwise from the env
+# var; with neither set, let the user pick interactively from recorded states.
+if [[ $# -ge 1 ]]; then
+    VMID="$1"
+fi
+VMID="${VMID:-}"
+if [[ -z "${VMID}" ]]; then
+    VMID="$(pick_state_interactive)"
+fi
+VMID="${VMID:-5000}"
+STATE_FILE="${STATE_DIR}/${VMID}.last"
 
 if [[ ! -f "${STATE_FILE}" ]]; then
     echo "error: no attachment state for VM ${VMID}: ${STATE_FILE}" >&2
