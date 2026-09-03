@@ -72,10 +72,12 @@ class WatchUsbTests(unittest.TestCase):
                 probe.watch_usb()
 
         events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
-        self.assertEqual([event["event_type"] for event in events], ["snapshot", "disconnected", "connected"])
-        self.assertEqual(events[0]["device"]["pnp"]["device_interface_path"], r"\\?\USB#VID_1234&PID_5678#A")
-        self.assertEqual(events[1]["device"]["pnp"]["device_interface_path"], r"\\?\USB#VID_1234&PID_5678#A")
-        self.assertEqual(events[2]["device"]["pnp"]["device_interface_path"], r"\\?\USB#VID_1234&PID_5678#B")
+        self.assertEqual([event["event"]["type"] for event in events], ["snapshot", "disconnected", "connected"])
+        self.assertEqual(events[0]["device"]["vid"], "1234")
+        self.assertEqual(events[1]["device"]["vid"], "1234")
+        self.assertEqual(events[2]["device"]["vid"], "9999")
+        self.assertNotIn("pnp", events[0]["device"])
+        self.assertNotIn("event_id", events[0])
 
     def test_watch_usb_survives_presence_errors(self):
         initial_device = make_watch_device(r"\\?\USB#VID_1234&PID_5678#A")
@@ -96,7 +98,7 @@ class WatchUsbTests(unittest.TestCase):
                 probe.watch_usb()
 
         events = [json.loads(line) for line in stdout.getvalue().splitlines() if line.strip()]
-        self.assertEqual([event["event_type"] for event in events], ["snapshot"])
+        self.assertEqual([event["event"]["type"] for event in events], ["snapshot"])
         self.assertIn("USB presence check failed: boom", stderr.getvalue())
 
 

@@ -28,6 +28,7 @@ python -m PyInstaller `
     --hidden-import win32timezone `
     --hidden-import main `
     --hidden-import delivery_queue `
+    --hidden-import observation_payload `
     --collect-all pywin32 `
     --distpath $OutputDir `
     --workpath $pyiWork `
@@ -43,6 +44,19 @@ python -m PyInstaller `
     --workpath (Join-Path $buildRoot "pyinstaller-collector") `
     --specpath (Join-Path $buildRoot "spec-collector") `
     (Join-Path $root "main.py")
+
+python -m PyInstaller `
+    --noconfirm `
+    --clean `
+    --onefile `
+    --console `
+    --name FlashControlAgentDump `
+    --hidden-import main `
+    --hidden-import observation_payload `
+    --distpath $OutputDir `
+    --workpath (Join-Path $buildRoot "pyinstaller-dump") `
+    --specpath (Join-Path $buildRoot "spec-dump") `
+    (Join-Path $root "dump.py")
 
 $serviceBundle = Join-Path $OutputDir "FlashControlAgentService"
 

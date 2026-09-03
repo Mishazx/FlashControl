@@ -24,22 +24,26 @@ def observation_payload(event_id, hostname="test-host", hardware="a", media="c",
     return {
         "schema_version": 1,
         "probe_version": "test",
-        "event_id": str(event_id),
-        "event_type": "snapshot",
-        "observed_at_utc": "2026-09-01T12:00:00Z",
+        "event": {
+            "id": str(event_id),
+            "type": "snapshot",
+            "observed_at_utc": "2026-09-01T12:00:00Z",
+        },
         "host": {"hostname": hostname},
         "session": {"sid": "S-1-5-21-test"},
-        "device": {
-            "hardware_stable_sha256": hardware * 64,
-            "pnp_observation_sha256": "b" * 64,
-            "media_identity_sha256": media * 64,
-            "media_state_sha256": state * 64,
-            "observation_sha256": "e" * 64,
+        "device": {"vendor": "FlashCo", "product": "Probe", "vid": "1234", "pid": "5678"},
+        "hashes": {
+            "hardware_stable": hardware * 64,
+            "pnp": "b" * 64,
+            "media_identity": media * 64,
+            "media_state": state * 64,
+            "observation": "e" * 64,
         },
-        "capabilities": {"storage_descriptor": True},
-        "capability_status": {"storage_descriptor": "available"},
-        "collector_errors": [],
     }
+
+
+def payload_event_id(payload):
+    return payload.get("event_id") or payload["event"]["id"]
 
 
 class SqliteApiTests(unittest.TestCase):
@@ -144,6 +148,70 @@ class SqliteApiTests(unittest.TestCase):
             )
         self.assertEqual(count, 1)
 
+    def test_legacy_flat_observation_still_ingests(self):
+        event_id = uuid.uuid4()
+        payload = {
+            "schema_version": 1,
+            "probe_version": "test",
+            "event_id": str(event_id),
+            "event_type": "snapshot",
+            "observed_at_utc": "2026-09-01T12:00:00Z",
+            "host": {"hostname": "legacy-host"},
+            "session": {"sid": "S-1-5-21-legacy"},
+            "device": {"hardware_stable_sha256": "9" * 64, "serial": "LEGACY"},
+            "capabilities": {"storage_descriptor": True},
+            "capability_status": {"storage_descriptor": "available"},
+            "collector_errors": [],
+        }
+        response = self.client.post("/api/v1/observations", json=payload)
+        self.assertEqual(response.status_code, 200)
+        with SessionLocal() as session:
+            observation = session.scalar(
+                select(Observation).where(Observation.event_id == event_id)
+            )
+            self.assertEqual(observation.hardware_stable_sha256, "9" * 64)
+            self.assertEqual(observation.hostname, "legacy-host")
+
+    def test_shared_batch_envelope_is_applied_to_each_observation(self):
+        first_id = uuid.uuid4()
+        second_id = uuid.uuid4()
+        payload = {
+            "schema_version": 1,
+            "probe_version": "test",
+            "host": {"hostname": "batch-host"},
+            "session": {"sid": "S-1-5-21-batch"},
+            "observations": [
+                {
+                    "event": {
+                        "id": str(first_id),
+                        "type": "snapshot",
+                        "observed_at_utc": "2026-09-01T12:00:00Z",
+                    },
+                    "device": {"serial": "ONE"},
+                    "hashes": {"hardware_stable": "a" * 64, "media_identity": "c" * 64},
+                },
+                {
+                    "event": {
+                        "id": str(second_id),
+                        "type": "snapshot",
+                        "observed_at_utc": "2026-09-01T12:00:00Z",
+                    },
+                    "device": {"serial": "TWO"},
+                    "hashes": {"hardware_stable": "b" * 64, "media_identity": "d" * 64},
+                },
+            ],
+        }
+        response = self.client.post("/api/v1/observations", json=payload)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["accepted"], 2)
+        with SessionLocal() as session:
+            first = session.scalar(select(Observation).where(Observation.event_id == first_id))
+            second = session.scalar(select(Observation).where(Observation.event_id == second_id))
+            self.assertEqual(first.hostname, "batch-host")
+            self.assertEqual(second.hostname, "batch-host")
+            self.assertEqual(first.device["serial"], "ONE")
+            self.assertEqual(second.device["serial"], "TWO")
+
     def test_ingest_registers_computer_device_media_and_decision(self):
         payload = observation_payload(uuid.uuid4(), hardware="1", media="2", state="3")
         response = self.client.post("/api/v1/observations", json=payload)
@@ -151,7 +219,7 @@ class SqliteApiTests(unittest.TestCase):
 
         with SessionLocal() as session:
             observation = session.scalar(
-                select(Observation).where(Observation.event_id == uuid.UUID(payload["event_id"]))
+                select(Observation).where(Observation.event_id == uuid.UUID(payload_event_id(payload)))
             )
             decision = session.scalar(
                 select(IdentityDecision).where(IdentityDecision.observation_id == observation.id)
@@ -263,10 +331,11 @@ class SqliteApiTests(unittest.TestCase):
         )
         self.assertEqual(observations.status_code, 200)
         matching_ids = {str(item["event_id"]) for item in observations.json()["items"]}
-        self.assertIn(second_payload["event_id"], matching_ids)
-        detail = self.client.get("/api/v1/observations/" + second_payload["event_id"])
+        self.assertIn(payload_event_id(second_payload), matching_ids)
+        detail = self.client.get("/api/v1/observations/" + payload_event_id(second_payload))
         self.assertEqual(detail.status_code, 200)
-        self.assertEqual(detail.json()["raw_observation"]["event_id"], second_payload["event_id"])
+        raw = detail.json()["raw_observation"]
+        self.assertEqual(payload_event_id(raw), payload_event_id(second_payload))
 
         decisions = self.client.get(
             "/api/v1/identity-decisions", params={"result": "SERIAL_COLLISION"}

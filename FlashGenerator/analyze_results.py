@@ -31,6 +31,14 @@ HASH_FIELDS = (
     "observation_sha256",
 )
 
+HASH_ALIASES = {
+    "hardware_stable_sha256": ("hardware_stable", "hardware_stable_sha256"),
+    "pnp_observation_sha256": ("pnp", "pnp_observation_sha256"),
+    "media_identity_sha256": ("media_identity", "media_identity_sha256"),
+    "media_state_sha256": ("media_state", "media_state_sha256"),
+    "observation_sha256": ("observation", "observation_sha256"),
+}
+
 
 def load_json(path):
     with open(path, "r", encoding="utf-8") as handle:
@@ -76,6 +84,14 @@ def profile_name_from_path(path):
     return base
 
 
+def hash_value(observation, device, field):
+    hashes = (observation or {}).get("hashes") or {}
+    for key in HASH_ALIASES.get(field, (field,)):
+        if hashes.get(key):
+            return hashes[key]
+    return (device or {}).get(field)
+
+
 def usb_observations(document):
     observations = document.get("observations") or []
     usb_items = []
@@ -83,12 +99,9 @@ def usb_observations(document):
         device = observation.get("device") or {}
         storage = device.get("storage") or {}
         bus_type = storage.get("bus_type")
-        if bus_type == 7:
+        if bus_type == 7 or device.get("vid") or ((device.get("pnp") or {}).get("usb")):
             usb_items.append(observation)
             continue
-        pnp = device.get("pnp") or {}
-        if pnp.get("usb"):
-            usb_items.append(observation)
     return usb_items if usb_items else observations
 
 
@@ -118,7 +131,7 @@ def check_expectation(profile_name, device, observation):
             errors.append("expected BusTypeUsb (7), got %r" % storage.get("bus_type"))
 
     layout = device.get("layout") or {}
-    style = layout.get("partition_style_name")
+    style = layout.get("style") or layout.get("partition_style_name")
     expected_style = expect.get("partition_style")
     if expected_style and style != expected_style:
         errors.append("expected partition_style %s, got %s" % (expected_style, style))
@@ -154,7 +167,7 @@ def check_expectation(profile_name, device, observation):
     min_size = expect.get("min_size_bytes")
     if min_size is not None:
         geometry = device.get("geometry") or {}
-        size_bytes = geometry.get("size_bytes") or 0
+        size_bytes = device.get("size_bytes") or geometry.get("size_bytes") or 0
         if size_bytes < int(min_size):
             errors.append("expected size_bytes >= %d, got %d" % (min_size, size_bytes))
 
@@ -166,11 +179,12 @@ def check_expectation(profile_name, device, observation):
                 errors.append("expected filesystem %s in %r" % (filesystem, sorted(actual)))
 
     for field in HASH_FIELDS:
-        if field not in device:
+        if not hash_value(observation, device, field):
             errors.append("missing hash field: %s" % field)
 
-    if device.get("fingerprint_version") != 2:
-        errors.append("expected fingerprint_version=2, got %r" % device.get("fingerprint_version"))
+    version = device.get("fingerprint_version")
+    if version not in (None, 2):
+        errors.append("expected fingerprint_version=2, got %r" % version)
 
     return errors, warnings
 
@@ -195,14 +209,17 @@ def compare_profiles(mapping, comparison):
             errors.append("missing result for comparison profile: %s" % profile_name)
             continue
         document = load_json(path)
-        device, _ = pick_primary_device(document)
+        device, observations = pick_primary_device(document)
         if device is None:
             errors.append("no device in result: %s" % profile_name)
             continue
-        devices[profile_name] = device
+        devices[profile_name] = (observations[0], device)
 
     for field in comparison.get("same_hashes") or []:
-        values = [devices[name].get(field) for name in profiles if name in devices]
+        values = [
+            hash_value(observation, device, field)
+            for observation, device in (devices[name] for name in profiles if name in devices)
+        ]
         if values and len(set(values)) != 1:
             errors.append(
                 "comparison %s expected same %s, got %r"
@@ -210,7 +227,10 @@ def compare_profiles(mapping, comparison):
             )
 
     for field in comparison.get("different_hashes") or []:
-        values = [devices[name].get(field) for name in profiles if name in devices]
+        values = [
+            hash_value(observation, device, field)
+            for observation, device in (devices[name] for name in profiles if name in devices)
+        ]
         if values and len(set(values)) < 2:
             errors.append(
                 "comparison %s expected different %s, got %r"
@@ -228,14 +248,18 @@ def check_repeatability(mapping, profile_name):
     observations = usb_observations(document)
     if len(observations) < 2:
         return ["repeatability profile %s needs >= 2 observations in one scan file" % profile_name]
-    first = observations[0].get("device") or {}
-    second = observations[1].get("device") or {}
+    first = observations[0]
+    second = observations[1]
+    first_device = first.get("device") or {}
+    second_device = second.get("device") or {}
     errors = []
     for field in HASH_FIELDS:
-        if first.get(field) != second.get(field):
+        left = hash_value(first, first_device, field)
+        right = hash_value(second, second_device, field)
+        if left != right:
             errors.append(
                 "repeatability %s: %s differs (%s vs %s)"
-                % (profile_name, field, first.get(field), second.get(field))
+                % (profile_name, field, left, right)
             )
     return errors
 
@@ -248,7 +272,7 @@ def analyze_file(path):
         return profile_name, ["no observations/device in %s" % path], []
 
     errors, warnings = check_expectation(profile_name, device, observations[0])
-    if not device.get("hardware_stable_sha256"):
+    if not hash_value(observations[0], device, "hardware_stable_sha256"):
         errors.append("probe output looks incomplete")
     return profile_name, errors, warnings
 

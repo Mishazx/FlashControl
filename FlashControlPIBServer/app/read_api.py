@@ -34,20 +34,33 @@ def page(db: Session, statement, limit: int, offset: int, serializer):
     }
 
 
-def computer_summary(computer: Computer) -> dict:
-    return {
+def computer_summary(computer: Computer, agent: Agent | None = None) -> dict:
+    result = {
         "id": computer.id,
         "hostname": computer.hostname,
         "domain": computer.domain,
         "first_seen_at": computer.first_seen_at,
         "last_seen_at": computer.last_seen_at,
     }
+    result["agent"] = agent_summary(agent) if agent is not None else None
+    return result
+
+
+def latest_computer_agent(db: Session, computer_id) -> Agent | None:
+    return db.scalar(
+        select(Agent)
+        .where(Agent.computer_id == computer_id)
+        .order_by(desc(Agent.last_seen_at_utc))
+        .limit(1)
+    )
 
 
 def device_summary(device: PhysicalDevice) -> dict:
     source = device.representative_device or {}
-    storage = source.get("storage") or {}
-    usb = ((source.get("pnp") or {}).get("usb") or {})
+    storage = source.get("storage") if isinstance(source.get("storage"), dict) else {}
+    usb = source.get("usb") if isinstance(source.get("usb"), dict) else {}
+    if not usb:
+        usb = ((source.get("pnp") or {}).get("usb") or {})
     return {
         "id": device.id,
         "status": device.status,
@@ -55,11 +68,11 @@ def device_summary(device: PhysicalDevice) -> dict:
         "hardware_stable_sha256": device.hardware_stable_sha256,
         "first_seen_at": device.first_seen_at,
         "last_seen_at": device.last_seen_at,
-        "vendor": storage.get("vendor"),
-        "product": storage.get("product"),
-        "storage_serial": storage.get("serial"),
-        "vid": usb.get("vid"),
-        "pid": usb.get("pid"),
+        "vendor": storage.get("vendor") or source.get("vendor"),
+        "product": storage.get("product") or source.get("product"),
+        "storage_serial": storage.get("serial") or source.get("serial"),
+        "vid": usb.get("vid") or source.get("vid"),
+        "pid": usb.get("pid") or source.get("pid"),
     }
 
 
@@ -189,6 +202,7 @@ def list_computers(
     offset: Offset = 0,
     hostname: str | None = None,
     domain: str | None = None,
+    agent_status: str | None = Query(default=None, pattern="^(online|offline|missing)$"),
     db: Session = Depends(get_db),
 ) -> dict:
     statement = select(Computer).order_by(desc(Computer.last_seen_at), Computer.hostname)
@@ -196,7 +210,22 @@ def list_computers(
         statement = statement.where(Computer.hostname.ilike("%%%s%%" % hostname.strip()))
     if domain:
         statement = statement.where(Computer.domain.ilike("%%%s%%" % domain.strip()))
-    return page(db, statement, limit, offset, lambda row: computer_summary(row[0]))
+    cutoff = datetime.datetime.now(datetime.timezone.utc) - AGENT_ONLINE_WINDOW
+    has_agent = select(Agent.id).where(Agent.computer_id == Computer.id).exists()
+    has_online_agent = select(Agent.id).where(
+        Agent.computer_id == Computer.id,
+        Agent.last_seen_at_utc >= cutoff,
+    ).exists()
+    if agent_status == "online":
+        statement = statement.where(has_online_agent)
+    elif agent_status == "offline":
+        statement = statement.where(has_agent, ~has_online_agent)
+    elif agent_status == "missing":
+        statement = statement.where(~has_agent)
+    return page(
+        db, statement, limit, offset,
+        lambda row: computer_summary(row[0], latest_computer_agent(db, row[0].id)),
+    )
 
 
 @router.get("/computers/{computer_id}")
@@ -211,7 +240,7 @@ def get_computer(computer_id: uuid.UUID, db: Session = Depends(get_db)) -> dict:
         .order_by(desc(Observation.observed_at_utc))
         .limit(100)
     ).all())
-    result = computer_summary(computer)
+    result = computer_summary(computer, latest_computer_agent(db, computer.id))
     result["last_host"] = computer.last_host
     result["recent_observations"] = [
         observation_summary(item, decision) for item, decision in observations

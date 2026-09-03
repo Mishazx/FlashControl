@@ -47,6 +47,26 @@ def app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def state_dir(install_dir):
+    parent_dir = os.path.dirname(os.path.abspath(install_dir))
+    return os.path.join(parent_dir, SERVICE_NAME + "State")
+
+
+def queue_path(install_dir):
+    return os.path.join(state_dir(install_dir), "FlashControlAgent.queue.db")
+
+
+def migrate_queue_file(install_dir):
+    old_path = os.path.join(os.path.abspath(install_dir), "FlashControlAgent.queue.db")
+    new_path = queue_path(install_dir)
+    if not os.path.exists(old_path) or os.path.exists(new_path):
+        return
+    state_folder = os.path.dirname(new_path)
+    if state_folder and not os.path.exists(state_folder):
+        os.makedirs(state_folder)
+    shutil.move(old_path, new_path)
+
+
 def resource_dir():
     if getattr(sys, "frozen", False):
         return getattr(sys, "_MEIPASS", app_dir())
@@ -217,6 +237,8 @@ def install(args):
     validate_server_url(args.server_url, min(int(args.request_timeout_seconds or 30), 10))
 
     install_dir = os.path.abspath(args.install_dir)
+    stop_service_processes()
+    migrate_queue_file(install_dir)
     service_dst = copy_service_files(install_dir)
     LOGGER.info("Copied service files to %s", install_dir)
 
@@ -224,7 +246,7 @@ def install(args):
         "server_url": args.server_url,
         "interval_seconds": args.interval_seconds,
         "request_timeout_seconds": args.request_timeout_seconds,
-        "queue_file": "FlashControlAgent.queue.db",
+        "queue_file": queue_path(install_dir),
         "queue_max_items": 100000,
         "retry_interval_seconds": 30,
         "retry_max_seconds": 3600,

@@ -39,11 +39,19 @@ def heartbeat_url(server_url, configured_url=""):
 
 def host_from_observation(json_text):
     try:
+        try:
+            from FlashControlAgent.observation_payload import expand_observations
+        except ImportError:
+            from observation_payload import expand_observations
         document = json.loads(json_text)
-        if isinstance(document, dict) and "observations" in document:
-            observations = document.get("observations") or []
-            document = observations[0] if observations else {}
-        host = document.get("host") if isinstance(document, dict) else None
+        if not isinstance(document, dict):
+            return {}
+        observations = expand_observations(document)
+        if observations:
+            host = observations[0].get("host")
+            if isinstance(host, dict):
+                return host
+        host = document.get("host")
         return host if isinstance(host, dict) else {}
     except (TypeError, ValueError):
         return {}

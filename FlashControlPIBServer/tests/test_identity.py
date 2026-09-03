@@ -36,7 +36,7 @@ class IdentityRuleTests(unittest.TestCase):
 
     def test_matching_serial_with_different_hardware_is_collision(self):
         device_a = {"storage": {"serial": "CHEAP-SERIAL"}}
-        device_b = {"storage": {"serial": "CHEAP-SERIAL"}}
+        device_b = {"serial": "CHEAP-SERIAL", "vid": "1234"}
         left = FakeObservation("hardware-a", "media-a", "computer-a", device_a)
         right = FakeObservation("hardware-b", "media-b", "computer-b", device_b)
         result = classify_pair(left, right)
@@ -57,6 +57,14 @@ class IdentityRuleTests(unittest.TestCase):
         result = classify_pair(left, right)
         self.assertNotEqual(result.result, "SAME")
         self.assertFalse(result.auto_link)
+
+    def test_vpd83_hex_is_accepted_as_strong_identifier(self):
+        device = {"vpd83": [{"value_hex": "5000000000000001"}]}
+        left = FakeObservation("hardware-a", "media-a", "computer-a", device)
+        right = FakeObservation("hardware-a", "media-a", "computer-a", device)
+        result = classify_pair(left, right)
+        self.assertEqual(result.result, "SAME")
+        self.assertTrue(result.auto_link)
 
 
 if __name__ == "__main__":

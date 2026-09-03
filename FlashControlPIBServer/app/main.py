@@ -87,14 +87,48 @@ def idempotent_insert(values: dict):
     )
 
 
+SHARED_OBSERVATION_KEYS = ("schema_version", "probe_version", "host", "session")
+
+
 def unpack_payload(payload: Any) -> list[ObservationIn]:
     if isinstance(payload, dict) and "observations" in payload:
         values = payload.get("observations")
+        shared = {
+            key: payload[key]
+            for key in SHARED_OBSERVATION_KEYS
+            if key in payload
+        }
     else:
         values = [payload]
+        shared = {}
     if not isinstance(values, list) or not values:
         raise ValueError("payload must contain at least one observation")
-    return [ObservationIn.model_validate(value) for value in values]
+    observations = []
+    for value in values:
+        if not isinstance(value, dict):
+            raise ValueError("every observation must be an object")
+        merged = dict(shared)
+        merged.update(value)
+        observations.append(ObservationIn.model_validate(merged))
+    return observations
+
+
+def observation_hash_value(item: ObservationIn, column: str) -> str | None:
+    aliases = {
+        "hardware_stable_sha256": ("hardware_stable_sha256", "hardware_stable"),
+        "pnp_observation_sha256": ("pnp_observation_sha256", "pnp"),
+        "media_identity_sha256": ("media_identity_sha256", "media_identity"),
+        "media_state_sha256": ("media_state_sha256", "media_state"),
+        "observation_sha256": ("observation_sha256", "observation"),
+    }
+    hashes = item.hashes or {}
+    device = item.device or {}
+    for key in aliases[column]:
+        value = hashes.get(key)
+        if value:
+            return str(value)
+    value = device.get(column)
+    return str(value) if value else None
 
 
 def observation_values(
@@ -111,17 +145,17 @@ def observation_values(
         "observed_at_utc": item.observed_at_utc,
         "hostname": item.host.get("hostname"),
         "user_sid": item.session.get("sid"),
-        "hardware_stable_sha256": device.get("hardware_stable_sha256"),
-        "pnp_observation_sha256": device.get("pnp_observation_sha256"),
-        "media_identity_sha256": device.get("media_identity_sha256"),
-        "media_state_sha256": device.get("media_state_sha256"),
-        "observation_sha256": device.get("observation_sha256"),
+        "hardware_stable_sha256": observation_hash_value(item, "hardware_stable_sha256"),
+        "pnp_observation_sha256": observation_hash_value(item, "pnp_observation_sha256"),
+        "media_identity_sha256": observation_hash_value(item, "media_identity_sha256"),
+        "media_state_sha256": observation_hash_value(item, "media_state_sha256"),
+        "observation_sha256": observation_hash_value(item, "observation_sha256"),
         "host": item.host,
         "session": item.session,
         "device": device,
-        "capabilities": item.capabilities,
-        "capability_status": item.capability_status,
-        "collector_errors": item.collector_errors,
+        "capabilities": item.capabilities or {},
+        "capability_status": item.capability_status or {},
+        "collector_errors": item.collector_errors or [],
         "raw_observation": raw,
         "source_ip": source_ip,
         "agent_id": agent_id,

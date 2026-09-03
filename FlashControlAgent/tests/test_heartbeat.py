@@ -2,6 +2,7 @@
 
 from __future__ import print_function
 
+import json
 import os
 import shutil
 import sys
@@ -13,7 +14,7 @@ AGENT_DIRECTORY = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if AGENT_DIRECTORY not in sys.path:
     sys.path.insert(0, AGENT_DIRECTORY)
 
-from heartbeat import build_heartbeat, heartbeat_url, load_or_create_agent_id
+from heartbeat import build_heartbeat, heartbeat_url, host_from_observation, load_or_create_agent_id
 
 
 class HeartbeatTests(unittest.TestCase):
@@ -46,6 +47,18 @@ class HeartbeatTests(unittest.TestCase):
         self.assertEqual(result["domain"], "CORP")
         self.assertEqual(result["current_ips"], ["10.0.0.1"])
         self.assertEqual(result["queue_size"], 7)
+
+    def test_host_is_read_from_shared_batch_envelope(self):
+        payload = json.dumps({
+            "host": {"hostname": "batch-pc", "ip_addresses": ["10.0.0.8"]},
+            "observations": [
+                {"event": {"id": "11111111-1111-1111-1111-111111111111"}},
+            ],
+        })
+        self.assertEqual(
+            host_from_observation(payload)["hostname"],
+            "batch-pc",
+        )
 
 
 if __name__ == "__main__":

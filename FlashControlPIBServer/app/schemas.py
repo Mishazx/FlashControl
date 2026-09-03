@@ -10,22 +10,53 @@ class ObservationIn(BaseModel):
 
     schema_version: Literal[1]
     probe_version: str = Field(min_length=1, max_length=64)
-    event_id: uuid.UUID
-    event_type: Literal["snapshot", "connected", "disconnected"]
-    observed_at_utc: datetime.datetime
+    event: dict[str, Any] | None = None
+    event_id: uuid.UUID | None = None
+    event_type: Literal["snapshot", "connected", "disconnected"] | None = None
+    observed_at_utc: datetime.datetime | None = None
     host: dict[str, Any]
     session: dict[str, Any]
     device: dict[str, Any]
-    capabilities: dict[str, bool]
-    capability_status: dict[str, str]
-    collector_errors: list[dict[str, Any]]
+    hashes: dict[str, Any] | None = None
+    capabilities: dict[str, bool] | None = None
+    capability_status: dict[str, str] | None = None
+    collector_errors: list[dict[str, Any]] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def lift_event_envelope(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        event = data.get("event")
+        if not isinstance(event, dict):
+            return data
+        lifted = dict(data)
+        if lifted.get("event_id") is None and event.get("id") is not None:
+            lifted["event_id"] = event["id"]
+        if lifted.get("event_type") is None and event.get("type") is not None:
+            lifted["event_type"] = event["type"]
+        if lifted.get("observed_at_utc") is None and event.get("observed_at_utc") is not None:
+            lifted["observed_at_utc"] = event["observed_at_utc"]
+        return lifted
 
     @field_validator("observed_at_utc")
     @classmethod
-    def require_timezone(cls, value: datetime.datetime) -> datetime.datetime:
+    def require_timezone(cls, value: datetime.datetime | None) -> datetime.datetime | None:
+        if value is None:
+            return value
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("observed_at_utc must include a UTC offset")
         return value
+
+    @model_validator(mode="after")
+    def require_event_fields(self):
+        if self.event_id is None:
+            raise ValueError("event.id or event_id is required")
+        if self.event_type is None:
+            raise ValueError("event.type or event_type is required")
+        if self.observed_at_utc is None:
+            raise ValueError("event.observed_at_utc or observed_at_utc is required")
+        return self
 
 
 class IngestResult(BaseModel):

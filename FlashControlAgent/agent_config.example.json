@@ -18,7 +18,7 @@
   ],
   "interval_seconds": 3600,
   "request_timeout_seconds": 30,
-  "queue_file": "FlashControlAgent.queue.db",
+  "queue_file": "C:\\ProgramData\\FlashControlAgentState\\FlashControlAgent.queue.db",
   "queue_max_items": 100000,
   "retry_interval_seconds": 30,
   "retry_max_seconds": 3600,

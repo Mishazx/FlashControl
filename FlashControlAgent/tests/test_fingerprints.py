@@ -246,16 +246,126 @@ class ObservationAndCapabilityTests(unittest.TestCase):
 
         self.assertEqual(observation["schema_version"], probe.SCHEMA_VERSION)
         self.assertEqual(observation["probe_version"], probe.PROBE_VERSION)
-        self.assertEqual(observation["event_type"], "snapshot")
+        self.assertEqual(observation["event"]["type"], "snapshot")
         self.assertEqual(observation["host"]["hostname"], "host-\u2603")
         self.assertEqual(observation["session"]["sid"], "S-1-5-21-123")
-        self.assertIn("capabilities", observation)
-        self.assertIn("capability_status", observation)
-        self.assertIn("collector_errors", observation)
+        self.assertNotIn("capabilities", observation)
+        self.assertNotIn("event_id", observation)
         dumped = json.dumps(observation)
         self.assertNotIn('"drive_letter":', dumped)
         self.assertNotIn('"volume": {', dumped)
         self.assertNotIn('"error":', dumped)
+
+    def test_build_observation_compacts_payload_without_mutating_source(self):
+        record = copy_record(base_record())
+        record["storage"]["descriptor_size"] = 123
+        record["geometry"]["cylinders"] = 7648
+        record["hardware_stable_sha256"] = "aa" * 32
+        record["pnp_observation_sha256"] = "bb" * 32
+        record["media_identity_sha256"] = "cc" * 32
+        record["media_state_sha256"] = "dd" * 32
+        record["observation_sha256"] = "ee" * 32
+        record["vpd80"] = None
+        record["volumes"][0]["errors"] = {
+            "mount_paths": None,
+            "open": None,
+            "device_number": None,
+            "volume_information": None,
+        }
+        original_nodes = copy_record(record["pnp"]["nodes"])
+        original_partitions = copy_record(record["layout"]["partitions"])
+
+        observation = probe.build_observation(
+            record,
+            host={"hostname": "host"},
+            session={
+                "sid": "S-1-5-21-123",
+                "username": "mihail",
+                "session_id": 2,
+                "errors": {"enumeration": None, "sid": None},
+            },
+            observed_at_utc="2026-09-01T12:00:00.000000Z",
+        )
+        device = observation["device"]
+
+        self.assertEqual(record["pnp"]["nodes"], original_nodes)
+        self.assertEqual(record["layout"]["partitions"], original_partitions)
+        self.assertEqual(observation["event"]["type"], "snapshot")
+        self.assertEqual(observation["hashes"], {
+            "hardware_stable": "aa" * 32,
+            "pnp": "bb" * 32,
+            "media_identity": "cc" * 32,
+            "media_state": "dd" * 32,
+            "observation": "ee" * 32,
+        })
+        self.assertNotIn("hardware_stable_sha256", device)
+        self.assertNotIn("pnp", device)
+        self.assertNotIn("path", device)
+        self.assertNotIn("physical_drive", device)
+        self.assertEqual(device["vendor"], "FlashCo")
+        self.assertEqual(device["product"], "Probe")
+        self.assertEqual(device["serial"], "STOR123")
+        self.assertEqual(device["vid"], "1234")
+        self.assertEqual(device["pid"], "5678")
+        self.assertEqual(device["usb_serial"], "ABCDEF")
+        self.assertEqual(device["size_bytes"], 64 * 1024 * 1024)
+        self.assertNotIn("vpd80", device)
+        self.assertEqual(device["layout"], {
+            "style": "MBR",
+            "mbr_signature": "A1B2C3D4",
+            "partitions": [{
+                "number": 2,
+                "offset": 4096,
+                "length": 8192,
+                "mbr_type": 7,
+            }],
+        })
+        self.assertEqual(observation["session"], {
+            "username": "mihail",
+            "sid": "S-1-5-21-123",
+        })
+        self.assertNotIn("collector_errors", observation)
+        self.assertEqual(device["volumes"][0]["letters"], ["D:"])
+        self.assertEqual(device["volumes"][0]["serial"], "ABCD1234")
+        self.assertNotIn("volume_guid", device["volumes"][0])
+        self.assertNotIn("mount_paths", device["volumes"][0])
+        self.assertEqual(device["vpd83"], [
+            {
+                "code_set": 1,
+                "type": 3,
+                "association": 0,
+                "value_ascii": "ABCD",
+                "value_hex": "41424344",
+            },
+            {
+                "code_set": 1,
+                "type": 3,
+                "association": 1,
+                "value_hex": "31323334",
+            },
+        ])
+        self.assertNotIn("identifier_size", json.dumps(device["vpd83"]))
+        self.assertNotIn('"value_ascii": null', json.dumps(device["vpd83"]))
+
+    def test_build_observation_keeps_full_payload_when_not_compact(self):
+        record = copy_record(base_record())
+        record["storage"]["descriptor_size"] = 123
+        record["hardware_stable_sha256"] = "aa" * 32
+        observation = probe.build_observation(
+            record,
+            host={"hostname": "host"},
+            session={"sid": "S-1-5-21-123", "errors": {"enumeration": None, "sid": None}},
+            observed_at_utc="2026-09-01T12:00:00.000000Z",
+            compact=False,
+        )
+        device = observation["device"]
+        self.assertEqual(observation["event"]["type"], "snapshot")
+        self.assertEqual(observation["hashes"]["hardware_stable"], "aa" * 32)
+        self.assertEqual(device["storage"]["descriptor_size"], 123)
+        self.assertEqual(len(device["pnp"]["nodes"]), 3)
+        self.assertTrue(any(item.get("is_unused") for item in device["layout"]["partitions"]))
+        self.assertEqual(observation["session"]["errors"]["sid"], None)
+        self.assertIn("capabilities", observation)
 
     def test_main_outputs_valid_scan_document(self):
         record = copy_record(base_record())
@@ -286,14 +396,19 @@ class ObservationAndCapabilityTests(unittest.TestCase):
         document = json.loads(buffer.getvalue())
         self.assertEqual(document["schema_version"], probe.SCHEMA_VERSION)
         self.assertEqual(document["probe_version"], probe.PROBE_VERSION)
+        self.assertEqual(document["host"]["hostname"], "host-\u20ac")
+        self.assertEqual(document["session"]["sid"], "S-1-5-21-123")
+        self.assertNotIn("schema_version", document["observations"][0])
+        self.assertNotIn("host", document["observations"][0])
+        self.assertNotIn("session", document["observations"][0])
         self.assertEqual(document["scan_id"], "33333333-3333-3333-3333-333333333333")
         self.assertEqual(document["generated_at_utc"], "2026-09-01T12:00:00.000000Z")
         self.assertEqual(len(document["observations"]), 2)
-        self.assertEqual(document["observations"][0]["event_id"], "11111111-1111-1111-1111-111111111111")
-        self.assertEqual(document["observations"][1]["event_id"], "22222222-2222-2222-2222-222222222222")
-        self.assertNotIn("local_users", document["observations"][0]["host"])
+        self.assertEqual(document["observations"][0]["event"]["id"], "11111111-1111-1111-1111-111111111111")
+        self.assertEqual(document["observations"][1]["event"]["id"], "22222222-2222-2222-2222-222222222222")
+        self.assertIn("device", document["observations"][0])
         self.assertEqual(document["scan_errors"], [])
-        self.assertTrue(document["scan_capabilities"]["storage_descriptor"])
+        self.assertNotIn("scan_capabilities", document)
 
 
 if __name__ == "__main__":

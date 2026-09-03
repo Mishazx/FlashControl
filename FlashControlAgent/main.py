@@ -31,6 +31,11 @@ import sys
 import time
 import uuid
 
+try:
+    from FlashControlAgent.observation_payload import pack_observation_payload
+except ImportError:
+    from observation_payload import pack_observation_payload
+
 
 SCHEMA_VERSION = 1
 PROBE_VERSION = "0.4.0"
@@ -1871,25 +1876,38 @@ def scan_physical_disks(max_disks=64, include_non_usb=False, enable_vpd80=False)
     return devices, errors
 
 
+def host_ip_addresses(include_link_local=False):
+    addresses = []
+    for address in enumerate_ip_addresses():
+        if not include_link_local and address.lower().startswith("fe80:"):
+            continue
+        addresses.append(address)
+    return addresses
+
+
 def host_info(include_diagnostics=False):
-    win32 = platform.win32_ver()
     join_info = query_domain_membership()
     result = {
         "hostname": socket.gethostname(),
-        "computer_name": socket.gethostname(),
-        "platform": platform.platform(),
-        "windows_release": win32[0],
-        "windows_version": win32[1],
-        "windows_service_pack": win32[2],
-        "architecture": platform.machine(),
-        "python_version": platform.python_version(),
         "is_domain_joined": join_info["is_domain_joined"],
-        "domain_name": join_info["domain_name"],
-        "workgroup_name": join_info["workgroup_name"],
-        "join_status": join_info["join_status"],
-        "ip_addresses": enumerate_ip_addresses(),
+        "ip_addresses": host_ip_addresses(include_link_local=include_diagnostics),
     }
+    if join_info["domain_name"]:
+        result["domain_name"] = join_info["domain_name"]
+    elif join_info["workgroup_name"]:
+        result["workgroup_name"] = join_info["workgroup_name"]
     if include_diagnostics:
+        win32 = platform.win32_ver()
+        result["computer_name"] = result["hostname"]
+        result["platform"] = platform.platform()
+        result["windows_release"] = win32[0]
+        result["windows_version"] = win32[1]
+        result["windows_service_pack"] = win32[2]
+        result["architecture"] = platform.machine()
+        result["python_version"] = platform.python_version()
+        result["join_status"] = join_info["join_status"]
+        result["domain_name"] = join_info["domain_name"]
+        result["workgroup_name"] = join_info["workgroup_name"]
         result["local_users"] = enumerate_local_users()
     return result
 
@@ -1924,30 +1942,217 @@ def collector_error_list(error_map):
     return result
 
 
-def build_observation(device_record, host, session, observed_at_utc, event_type="snapshot"):
+STORAGE_PAYLOAD_KEYS = (
+    "vendor",
+    "product",
+    "revision",
+    "serial",
+)
+
+PARTITION_PAYLOAD_KEYS = (
+    "number",
+    "offset",
+    "length",
+    "mbr_type",
+    "partition_type_guid",
+    "partition_guid",
+)
+
+VPD83_PAYLOAD_KEYS = (
+    "code_set",
+    "type",
+    "association",
+    "value_ascii",
+    "value_hex",
+)
+
+SESSION_PAYLOAD_KEYS = (
+    "username",
+    "domain",
+    "sid",
+)
+
+HASH_FIELDS = (
+    ("hardware_stable", "hardware_stable_sha256"),
+    ("pnp", "pnp_observation_sha256"),
+    ("media_identity", "media_identity_sha256"),
+    ("media_state", "media_state_sha256"),
+    ("observation", "observation_sha256"),
+)
+
+DEVICE_HASH_KEYS = (
+    "fingerprint_version",
+    "hardware_stable_sha256",
+    "pnp_observation_sha256",
+    "media_identity_sha256",
+    "media_state_sha256",
+    "observation_sha256",
+)
+
+
+def compact_mapping(value, keys):
+    result = {}
+    for key in keys:
+        if key not in value:
+            continue
+        item = value[key]
+        if item is None:
+            continue
+        result[key] = item
+    return result
+
+
+def compact_usb(pnp):
+    usb = (pnp or {}).get("usb") or {}
+    if not isinstance(usb, dict):
+        return {}
+    result = compact_mapping(usb, ("vid", "pid"))
+    candidate = usb.get("serial_candidate") or {}
+    if isinstance(candidate, dict) and candidate.get("value"):
+        result["serial"] = candidate["value"]
+    return result
+
+
+def compact_layout(layout):
+    result = {}
+    style = layout.get("partition_style_name") or layout.get("style")
+    if style:
+        result["style"] = style
+    if layout.get("mbr_signature"):
+        result["mbr_signature"] = layout["mbr_signature"]
+    if layout.get("gpt_disk_guid"):
+        result["gpt_disk_guid"] = layout["gpt_disk_guid"]
+    partitions = []
+    for partition in layout.get("partitions") or []:
+        if not isinstance(partition, dict) or partition.get("is_unused"):
+            continue
+        partitions.append(compact_mapping(partition, PARTITION_PAYLOAD_KEYS))
+    if partitions:
+        result["partitions"] = partitions
+    return result
+
+
+def compact_volume(volume):
+    result = {}
+    letters = volume.get("letters") or volume.get("drive_letters")
+    if letters:
+        result["letters"] = letters
+    if volume.get("filesystem"):
+        result["filesystem"] = volume["filesystem"]
+    serial = volume.get("serial") or volume.get("volume_serial")
+    if serial:
+        result["serial"] = serial
+    label = volume.get("label") or volume.get("volume_label")
+    if label:
+        result["label"] = label
+    return result
+
+
+def compact_vpd83(vpd83):
+    result = []
+    for item in vpd83 or []:
+        if not isinstance(item, dict):
+            continue
+        compacted = compact_mapping(item, VPD83_PAYLOAD_KEYS)
+        if compacted:
+            result.append(compacted)
+    return result
+
+
+def compact_session(session):
+    if not isinstance(session, dict):
+        return session
+    return compact_mapping(session, SESSION_PAYLOAD_KEYS)
+
+
+def observation_hashes(device_record):
+    result = {}
+    for short_name, full_name in HASH_FIELDS:
+        value = device_record.get(full_name)
+        if value:
+            result[short_name] = value
+    return result
+
+
+def compact_device_payload(device):
+    result = compact_mapping(device.get("storage") or {}, STORAGE_PAYLOAD_KEYS)
+    usb = compact_usb(device.get("pnp") or {})
+    if usb.get("vid"):
+        result["vid"] = usb["vid"]
+    if usb.get("pid"):
+        result["pid"] = usb["pid"]
+    usb_serial = usb.get("serial")
+    if usb_serial and usb_serial != result.get("serial"):
+        result["usb_serial"] = usb_serial
+    geometry = device.get("geometry") or {}
+    if isinstance(geometry, dict) and geometry.get("size_bytes") is not None:
+        result["size_bytes"] = geometry["size_bytes"]
+    layout = device.get("layout")
+    if isinstance(layout, dict):
+        compacted_layout = compact_layout(layout)
+        if compacted_layout:
+            result["layout"] = compacted_layout
+    volumes = []
+    for item in device.get("volumes") or []:
+        if not isinstance(item, dict):
+            continue
+        compacted = compact_volume(item)
+        if compacted:
+            volumes.append(compacted)
+    if volumes:
+        result["volumes"] = volumes
+    vpd80 = device.get("vpd80")
+    if isinstance(vpd80, dict) and vpd80.get("serial"):
+        result["vpd80"] = vpd80["serial"]
+    vpd83 = compact_vpd83(device.get("vpd83") or [])
+    if vpd83:
+        result["vpd83"] = vpd83
+    return result
+
+
+def build_observation(
+    device_record,
+    host,
+    session,
+    observed_at_utc,
+    event_type="snapshot",
+    compact=True,
+):
     device = dict(device_record)
+    hashes = observation_hashes(device)
     capabilities = device.pop("capabilities", {})
     capability_status = device.pop("capability_status", {})
     collector_errors = collector_error_list(device.pop("collector_errors", {}))
-    return {
+    for key in DEVICE_HASH_KEYS:
+        device.pop(key, None)
+    if compact:
+        device = compact_device_payload(device)
+        session = compact_session(session)
+    payload = {
         "schema_version": SCHEMA_VERSION,
         "probe_version": PROBE_VERSION,
-        "event_id": str(uuid.uuid4()),
-        "event_type": event_type,
-        "observed_at_utc": observed_at_utc,
+        "event": {
+            "id": str(uuid.uuid4()),
+            "type": event_type,
+            "observed_at_utc": observed_at_utc,
+        },
         "host": host,
         "session": session,
         "device": device,
-        "capabilities": capabilities,
-        "capability_status": capability_status,
-        "collector_errors": collector_errors,
     }
+    if hashes:
+        payload["hashes"] = hashes
+    if not compact:
+        payload["capabilities"] = capabilities
+        payload["capability_status"] = capability_status
+        if collector_errors:
+            payload["collector_errors"] = collector_errors
+    return payload
 
 
 def write_json_stdout(value, compact=False):
     options = {
         "ensure_ascii": False,
-        "sort_keys": True,
     }
     if compact:
         options["separators"] = (",", ":")
@@ -2020,7 +2225,14 @@ def watch_usb(include_diagnostics=False, interval_seconds=2.0, enable_vpd80=Fals
         if key:
             cache[key] = device
         write_json_stdout(
-            build_observation(device, host, session, observed_at, "snapshot"),
+            build_observation(
+                device,
+                host,
+                session,
+                observed_at,
+                "snapshot",
+                compact=not include_diagnostics,
+            ),
             compact=True,
         )
 
@@ -2071,6 +2283,7 @@ def watch_usb(include_diagnostics=False, interval_seconds=2.0, enable_vpd80=Fals
                         event_session,
                         event_time,
                         "disconnected",
+                        compact=not include_diagnostics,
                     ),
                     compact=True,
                 )
@@ -2089,6 +2302,7 @@ def watch_usb(include_diagnostics=False, interval_seconds=2.0, enable_vpd80=Fals
                         event_session,
                         event_time,
                         "connected",
+                        compact=not include_diagnostics,
                     ),
                     compact=True,
                 )
@@ -2135,19 +2349,27 @@ def main():
     host = host_info(include_diagnostics=include_diagnostics)
     session = collect_active_session()
     observations = [
-        build_observation(device, host, session, observed_at_utc)
+        build_observation(
+            device,
+            host,
+            session,
+            observed_at_utc,
+            compact=not include_diagnostics,
+        )
         for device in devices
     ]
 
-    result = {
-        "schema_version": SCHEMA_VERSION,
-        "probe_version": PROBE_VERSION,
+    extra = {
         "scan_id": str(uuid.uuid4()),
         "generated_at_utc": observed_at_utc,
-        "observations": observations,
-        "scan_capabilities": summarize_capabilities(devices),
         "scan_errors": errors,
     }
+    if include_diagnostics:
+        extra["scan_capabilities"] = summarize_capabilities(devices)
+    result = pack_observation_payload(observations, extra=extra)
+    if "schema_version" not in result:
+        result["schema_version"] = SCHEMA_VERSION
+        result["probe_version"] = PROBE_VERSION
 
     write_json_stdout(result)
 

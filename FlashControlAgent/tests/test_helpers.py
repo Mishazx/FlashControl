@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 
 from probe_support import probe
@@ -64,6 +65,20 @@ class HelperTests(unittest.TestCase):
         self.assertEqual(error["collector"], "geometry")
         self.assertEqual(error["status"], "collector_failed")
         self.assertIn("ValueError", error["message"])
+
+    def test_host_ip_addresses_drops_link_local_ipv6_by_default(self):
+        addresses = [
+            "10.255.0.100",
+            "fe80::1d84:8c8d:da:48b8",
+            "192.168.2.108",
+            "FE80::EC3F:2B62:22B9:B11C",
+        ]
+        with patch.object(probe, "enumerate_ip_addresses", return_value=addresses):
+            self.assertEqual(
+                probe.host_ip_addresses(),
+                ["10.255.0.100", "192.168.2.108"],
+            )
+            self.assertEqual(probe.host_ip_addresses(include_link_local=True), addresses)
 
 
 if __name__ == "__main__":

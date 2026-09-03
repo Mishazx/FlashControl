@@ -1,4 +1,5 @@
 import os
+import json
 import shutil
 import tempfile
 import unittest
@@ -42,6 +43,31 @@ class ProxyApiTests(unittest.TestCase):
         duplicate = self.client.post("/api/v1/observations", json=payload, headers=self.headers)
         self.assertEqual(duplicate.status_code, 202)
         self.assertEqual(queue.count(), before + 1)
+
+    def test_shared_observation_envelope_is_expanded(self):
+        first = str(uuid.uuid4())
+        second = str(uuid.uuid4())
+        payload = {
+            "schema_version": 1,
+            "host": {"hostname": "proxy-host"},
+            "session": {"sid": "S-1-5-21-proxy"},
+            "observations": [
+                {"event": {"id": first}},
+                {"event": {"id": second}},
+            ],
+        }
+        before = queue.count()
+        response = self.client.post("/api/v1/observations", json=payload, headers=self.headers)
+        self.assertEqual(response.status_code, 202)
+        self.assertEqual(queue.count(), before + 2)
+        stored = [
+            json.loads(item["payload_json"])
+            for item in queue.due()
+            if item["kind"] == "observation"
+        ]
+        matching = [item for item in stored if item.get("event", {}).get("id") in (first, second)]
+        self.assertEqual(len(matching), 2)
+        self.assertTrue(all(item.get("host", {}).get("hostname") == "proxy-host" for item in matching))
 
     def test_heartbeat_is_replaced_and_identity_is_checked(self):
         payload = {"agent_id": str(self.agent_id), "queue_size": 2}

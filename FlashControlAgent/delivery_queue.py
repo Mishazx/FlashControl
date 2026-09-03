@@ -13,6 +13,17 @@ class QueueFullError(RuntimeError):
     pass
 
 
+def observation_event_id(observation):
+    if not isinstance(observation, dict):
+        return None
+    event_id = observation.get("event_id")
+    if event_id:
+        return str(event_id)
+    event = observation.get("event") or {}
+    event_id = event.get("id")
+    return str(event_id) if event_id else None
+
+
 class DeliveryQueue(object):
     def __init__(self, path, max_items=100000, clock=None):
         self.path = os.path.abspath(path)
@@ -43,22 +54,22 @@ class DeliveryQueue(object):
         self.connection.close()
 
     def _observations(self, json_text):
-        document = json.loads(json_text)
-        if isinstance(document, dict) and "observations" in document:
-            observations = document.get("observations")
-        else:
-            observations = [document]
-        if not isinstance(observations, list) or not observations:
+        try:
+            from FlashControlAgent.observation_payload import expand_observations
+        except ImportError:
+            from observation_payload import expand_observations
+        observations = expand_observations(json.loads(json_text))
+        if not observations:
             raise ValueError("payload must contain at least one observation")
         for observation in observations:
-            if not isinstance(observation, dict) or not observation.get("event_id"):
+            if not isinstance(observation, dict) or not observation_event_id(observation):
                 raise ValueError("every observation must contain event_id")
         return observations
 
     def enqueue_json(self, json_text):
         observations = self._observations(json_text)
         now = float(self.clock())
-        event_ids = [str(item["event_id"]) for item in observations]
+        event_ids = [observation_event_id(item) for item in observations]
         if len(set(event_ids)) != len(event_ids):
             raise ValueError("payload contains duplicate event_id values")
 
@@ -73,7 +84,7 @@ class DeliveryQueue(object):
 
         with self.connection:
             for observation in observations:
-                event_id = str(observation["event_id"])
+                event_id = observation_event_id(observation)
                 payload = json.dumps(
                     observation,
                     ensure_ascii=False,

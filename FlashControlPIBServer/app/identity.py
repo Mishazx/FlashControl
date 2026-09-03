@@ -57,7 +57,12 @@ def strong_identifiers(device: dict) -> set[str]:
         vpd83 = vpd83.get("identifiers") or []
     for item in vpd83:
         if isinstance(item, dict):
-            value = item.get("value") or item.get("identifier")
+            value = (
+                item.get("value")
+                or item.get("identifier")
+                or item.get("value_hex")
+                or item.get("value_ascii")
+            )
         else:
             value = item
         if value:
@@ -67,13 +72,22 @@ def strong_identifiers(device: dict) -> set[str]:
 
 def serial_identifiers(device: dict) -> set[str]:
     values = set()
-    storage = device.get("storage") or {}
-    if storage.get("serial"):
-        values.add("storage:" + str(storage["serial"]).strip().lower())
-    usb = ((device.get("pnp") or {}).get("usb") or {})
-    candidate = usb.get("serial_candidate") or {}
-    if isinstance(candidate, dict) and candidate.get("value"):
-        values.add("usb:" + str(candidate["value"]).strip().lower())
+    storage = device.get("storage") if isinstance(device.get("storage"), dict) else {}
+    serial = storage.get("serial") or device.get("serial")
+    if serial:
+        values.add("storage:" + str(serial).strip().lower())
+    usb = device.get("usb") if isinstance(device.get("usb"), dict) else {}
+    pnp_usb = ((device.get("pnp") or {}).get("usb") or {})
+    if not usb and isinstance(pnp_usb, dict):
+        usb = pnp_usb
+    candidate = usb.get("serial_candidate") if isinstance(usb.get("serial_candidate"), dict) else {}
+    usb_serial = (
+        device.get("usb_serial")
+        or usb.get("serial")
+        or candidate.get("value")
+    )
+    if usb_serial:
+        values.add("usb:" + str(usb_serial).strip().lower())
     return values
 
 

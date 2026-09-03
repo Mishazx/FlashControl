@@ -37,9 +37,9 @@ class DeliveryQueueTests(unittest.TestCase):
 
     def payload(self, event_id):
         return json.dumps({
-            "schema_version": 2,
+            "schema_version": 1,
             "probe_version": "0.4.0",
-            "event_id": event_id,
+            "event": {"id": event_id, "type": "snapshot"},
         })
 
     def test_event_survives_reopen_until_acknowledged(self):
@@ -89,13 +89,32 @@ class DeliveryQueueTests(unittest.TestCase):
         received = []
 
         def online(payload):
-            received.append(json.loads(payload)["event_id"])
+            received.append(json.loads(payload)["event"]["id"])
 
         self.assertEqual(deliver_due(self.queue, online, base_delay=10), 1)
         self.assertEqual(received, [event_id])
         self.assertEqual(self.queue.count(), 0)
         self.assertEqual(deliver_due(self.queue, online, base_delay=10), 0)
         self.assertEqual(received, [event_id])
+
+    def test_shared_envelope_is_expanded_before_queueing(self):
+        first = "88888888-8888-8888-8888-888888888888"
+        second = "99999999-9999-9999-9999-999999999999"
+        document = json.dumps({
+            "schema_version": 1,
+            "probe_version": "0.4.0",
+            "host": {"hostname": "TEST-PC"},
+            "session": {"sid": "S-1-5-21-test"},
+            "observations": [
+                {"event": {"id": first, "type": "snapshot"}},
+                {"event": {"id": second, "type": "snapshot"}},
+            ],
+        })
+        self.assertEqual(self.queue.enqueue_json(document), [first, second])
+        stored = json.loads(self.queue.due()[0]["payload_json"])
+        self.assertEqual(stored["host"]["hostname"], "TEST-PC")
+        self.assertEqual(stored["session"]["sid"], "S-1-5-21-test")
+        self.assertEqual(stored["schema_version"], 1)
 
 
 if __name__ == "__main__":

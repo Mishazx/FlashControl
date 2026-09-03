@@ -59,6 +59,13 @@ def app_dir():
     return os.path.dirname(os.path.abspath(__file__))
 
 
+DEFAULT_CONFIG["queue_file"] = os.path.join(
+    os.path.dirname(app_dir()),
+    "FlashControlAgentState",
+    DEFAULT_CONFIG["queue_file"],
+)
+
+
 def bootstrap_log_path():
     return os.path.join(app_dir(), "FlashControlAgent.bootstrap.log")
 
@@ -290,6 +297,11 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
         queue = DeliveryQueue(
             queue_path(self.config),
             max_items=int(self.config.get("queue_max_items") or 100000),
+        )
+        self.logger.info(
+            "delivery queue ready: path=%s size=%s",
+            queue.path,
+            queue.count(),
         )
         next_collection_at = 0
         next_heartbeat_at = 0

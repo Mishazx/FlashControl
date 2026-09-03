@@ -35,14 +35,37 @@ class ProxyQueue:
         with self.lock:
             self.connection.close()
 
+    def _expand_observations(self, payload):
+        if isinstance(payload, dict) and "observations" in payload:
+            values = payload.get("observations") or []
+            shared = {
+                key: payload[key]
+                for key in ("schema_version", "probe_version", "host", "session")
+                if key in payload
+            }
+            expanded = []
+            for value in values:
+                if not isinstance(value, dict):
+                    continue
+                merged = dict(shared)
+                merged.update(value)
+                expanded.append(merged)
+            return expanded
+        return [payload] if payload else []
+
     def enqueue_observations(self, agent_id, payload):
-        values = payload.get("observations") if isinstance(payload, dict) and "observations" in payload else [payload]
-        if not isinstance(values, list) or not values:
+        values = self._expand_observations(payload)
+        if not values:
             raise ValueError("payload must contain observations")
         now = float(self.clock())
         with self.lock, self.connection:
             for value in values:
-                event_id = value.get("event_id") if isinstance(value, dict) else None
+                event_id = None
+                if isinstance(value, dict):
+                    event_id = value.get("event_id")
+                    if not event_id:
+                        event = value.get("event") or {}
+                        event_id = event.get("id")
                 if not event_id:
                     raise ValueError("observation has no event_id")
                 item_key = "observation:" + str(event_id)
