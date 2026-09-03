@@ -10,11 +10,6 @@ services:
     volumes:
       - flashcontrol_pgdata:/var/lib/postgresql/data
       - ./migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql:ro
-      - ./migrations/002_identity_engine.sql:/docker-entrypoint-initdb.d/002_identity_engine.sql:ro
-      - ./migrations/003_auth.sql:/docker-entrypoint-initdb.d/003_auth.sql:ro
-      - ./migrations/005_agents.sql:/docker-entrypoint-initdb.d/005_agents.sql:ro
-      - ./migrations/006_machine_auth.sql:/docker-entrypoint-initdb.d/006_machine_auth.sql:ro
-      - ./migrations/007_agent_enroll.sql:/docker-entrypoint-initdb.d/007_agent_enroll.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U flashcontrol -d flashcontrol"]
       interval: 5s
@@ -41,11 +36,20 @@ services:
       FLASHCONTROL_LDAP_SECURITY_GROUPS: ${FLASHCONTROL_LDAP_SECURITY_GROUPS:-}
       FLASHCONTROL_LDAP_AUDITOR_GROUPS: ${FLASHCONTROL_LDAP_AUDITOR_GROUPS:-}
       FLASHCONTROL_LDAP_DEFAULT_ROLE: ${FLASHCONTROL_LDAP_DEFAULT_ROLE:-}
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     depends_on:
       postgres:
         condition: service_healthy
+
+  nginx:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - api
 
 volumes:
   flashcontrol_pgdata:

@@ -11,6 +11,13 @@ cd FlashControlPIBServer
 docker compose up --build
 ```
 
+To recreate the local PostgreSQL volume after a schema reset:
+
+```powershell
+docker compose down -v
+docker compose up --build
+```
+
 Endpoints:
 
 - `GET /health/live`
@@ -34,15 +41,10 @@ python -m uvicorn app.main:app --reload
 ```
 
 SQLite is rejected when `FLASHCONTROL_ENVIRONMENT=production`. Production uses
-PostgreSQL and requires applying migrations explicitly, in numeric order:
+PostgreSQL and requires applying the bootstrap migration:
 
 ```text
 migrations/001_initial.sql
-migrations/002_identity_engine.sql
-migrations/003_auth.sql
-migrations/005_agents.sql
-migrations/006_machine_auth.sql
-migrations/007_agent_enroll.sql
 ```
 
 Every accepted Observation is linked to a computer, evaluated by the identity

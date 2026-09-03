@@ -7,17 +7,20 @@ from typing import Any
 from fastapi import Body, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import ValidationError
-from sqlalchemy import func, select, text
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from sqlalchemy import delete, func, select, text
 from sqlalchemy.orm import Session
 
 from .db import engine, get_db, initialize_database
-from .auth import AuthContext, audit, optional_auth_context, require_csrf, router as auth_router
+from .auth import (
+    ALLOWED_ROLES, AuthContext, audit, create_local_user, hash_password,
+    optional_auth_context, require_csrf, require_roles, router as auth_router,
+)
 from .config import ENVIRONMENT
 from .enroll import issue_agent_token
 from .identity import register_computer, resolve_identity
 from .machine_auth import MachinePrincipal, require_machine
-from .models import Agent, Computer, IdentityDecision, MediaState, Observation, PhysicalDevice
+from .models import Agent, AuthSession, AuthUser, Computer, IdentityDecision, MediaState, Observation, PhysicalDevice
 from .read_api import router as read_router
 from .schemas import AgentEnrollIn, AgentEnrollOut, AgentHeartbeatIn, IngestResult, ObservationIn
 
@@ -42,6 +45,49 @@ web_directory = Path(__file__).parent / "web"
 app.mount("/static", StaticFiles(directory=web_directory), name="static")
 
 
+@app.get("/", include_in_schema=False, response_model=None)
+def web_ui(
+    context: AuthContext | None = Depends(optional_auth_context),
+) -> FileResponse | RedirectResponse:
+    if context is None:
+        return RedirectResponse("/login", status_code=303)
+    return FileResponse(web_directory / "index.html")
+
+
+@app.get("/login", include_in_schema=False, response_model=None)
+def login_page() -> FileResponse:
+    return FileResponse(web_directory / "login.html")
+
+
+class UserCreateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(min_length=1, max_length=128)
+    password: str = Field(min_length=12, max_length=1024)
+    role: str
+
+
+class UserUpdateIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: str | None = None
+    enabled: bool | None = None
+    password: str | None = Field(default=None, min_length=12, max_length=1024)
+
+
+def user_summary(user: AuthUser, sessions: int = 0) -> dict:
+    return {
+        "id": user.id,
+        "username": user.username,
+        "role": user.role,
+        "enabled": user.enabled,
+        "is_local": user.password_hash is not None,
+        "created_at_utc": user.created_at_utc,
+        "last_login_at_utc": user.last_login_at_utc,
+        "active_sessions": sessions,
+    }
+
+
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
     response = await call_next(request)
@@ -57,20 +103,6 @@ async def security_headers(request: Request, call_next):
         )
         response.headers["Cache-Control"] = "no-store"
     return response
-
-
-@app.get("/", include_in_schema=False, response_model=None)
-def web_ui(
-    context: AuthContext | None = Depends(optional_auth_context),
-) -> FileResponse | RedirectResponse:
-    if context is None:
-        return RedirectResponse("/login", status_code=303)
-    return FileResponse(web_directory / "index.html")
-
-
-@app.get("/login", include_in_schema=False, response_model=None)
-def login_page() -> FileResponse | RedirectResponse:
-    return FileResponse(web_directory / "login.html")
 
 
 def idempotent_insert(values: dict):
@@ -160,6 +192,13 @@ def observation_values(
     }
 
 
+def clear_device_candidate_refs(db: Session, device_id) -> None:
+    for decision in db.scalars(
+        select(IdentityDecision).where(IdentityDecision.candidate_physical_device_id == device_id)
+    ):
+        decision.candidate_physical_device_id = None
+
+
 def delete_observation_record(db: Session, observation: Observation, prune_device: bool) -> dict[str, int]:
     deleted_decisions = 0
     deleted_media_states = 0
@@ -198,6 +237,7 @@ def delete_observation_record(db: Session, observation: Observation, prune_devic
                 .where(Observation.physical_device_id == physical_device_id)
             ) or 0
             if remaining == 0:
+                clear_device_candidate_refs(db, physical_device_id)
                 for media_state in list(db.scalars(
                     select(MediaState).where(MediaState.physical_device_id == physical_device_id)
                 )):
@@ -229,6 +269,14 @@ def require_management_context(
     return context
 
 
+def require_admin_context(
+    context: AuthContext = Depends(require_csrf),
+) -> AuthContext:
+    if context.user.role != "admin":
+        raise HTTPException(status_code=403, detail="insufficient role")
+    return context
+
+
 @app.get("/health/live")
 def health_live() -> dict[str, str]:
     return {"status": "ok"}
@@ -238,6 +286,80 @@ def health_live() -> dict[str, str]:
 def health_ready(db: Session = Depends(get_db)) -> dict[str, str]:
     db.execute(text("SELECT 1"))
     return {"status": "ok"}
+
+
+@app.get("/api/v1/users")
+def list_users(
+    q: str = "",
+    _: AuthUser = Depends(require_roles("admin")),
+    db: Session = Depends(get_db),
+) -> dict:
+    statement = select(AuthUser).order_by(AuthUser.username)
+    if q.strip():
+        statement = statement.where(AuthUser.username.ilike(f"%{q.strip()}%"))
+    users = list(db.scalars(statement))
+    now = datetime.datetime.now(datetime.timezone.utc)
+    session_counts = dict(db.execute(
+        select(AuthSession.user_id, func.count(AuthSession.id))
+        .where(AuthSession.expires_at_utc > now)
+        .group_by(AuthSession.user_id)
+    ).all())
+    return {"items": [user_summary(user, session_counts.get(user.id, 0)) for user in users], "total": len(users)}
+
+
+@app.post("/api/v1/users", status_code=201)
+def create_user(
+    payload: UserCreateIn,
+    request: Request,
+    context: AuthContext = Depends(require_admin_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    if payload.role not in ALLOWED_ROLES:
+        raise HTTPException(status_code=422, detail="invalid role")
+    try:
+        user = create_local_user(db, payload.username, payload.password, payload.role)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    audit(db, request, "users.create", True, user=context.user, details={"username": user.username, "role": user.role})
+    db.commit()
+    return user_summary(user)
+
+
+@app.patch("/api/v1/users/{user_id}")
+def update_user(
+    user_id: uuid.UUID,
+    payload: UserUpdateIn,
+    request: Request,
+    context: AuthContext = Depends(require_admin_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    user = db.get(AuthUser, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="user not found")
+    if payload.role is not None and payload.role not in ALLOWED_ROLES:
+        raise HTTPException(status_code=422, detail="invalid role")
+    if user.id == context.user.id and (payload.enabled is False or (payload.role is not None and payload.role != "admin")):
+        raise HTTPException(status_code=422, detail="cannot remove own administrator access")
+
+    changes = {}
+    if payload.role is not None and payload.role != user.role:
+        user.role = payload.role
+        changes["role"] = payload.role
+    if payload.enabled is not None and payload.enabled != user.enabled:
+        user.enabled = payload.enabled
+        changes["enabled"] = payload.enabled
+    if payload.password is not None:
+        if user.password_hash is None:
+            raise HTTPException(status_code=422, detail="password cannot be set for a directory user")
+        user.password_hash = hash_password(payload.password)
+        changes["password_reset"] = True
+    if changes:
+        if payload.enabled is False or payload.password is not None:
+            db.execute(delete(AuthSession).where(AuthSession.user_id == user.id))
+        audit(db, request, "users.update", True, user=context.user, details={"username": user.username, **changes})
+        db.commit()
+        db.refresh(user)
+    return user_summary(user)
 
 
 @app.post("/api/v1/agents/enroll", response_model=AgentEnrollOut)
@@ -369,7 +491,7 @@ def delete_observation(
 def delete_device(
     device_id: uuid.UUID,
     request: Request,
-    context: AuthContext = Depends(require_management_context),
+    context: AuthContext = Depends(require_admin_context),
     db: Session = Depends(get_db),
 ) -> dict:
     device = db.get(PhysicalDevice, device_id)
@@ -396,6 +518,7 @@ def delete_device(
         db.delete(media_state)
         totals["deleted_media_states"] += 1
 
+    clear_device_candidate_refs(db, device.id)
     db.delete(device)
     totals["deleted_devices"] = 1
     audit(
@@ -405,6 +528,51 @@ def delete_device(
         True,
         user=context.user,
         details={"device_id": str(device_id), **totals},
+    )
+    db.commit()
+    return {"status": "deleted", **totals}
+
+
+@app.delete("/api/v1/computers/{computer_id}")
+def delete_computer(
+    computer_id: uuid.UUID,
+    request: Request,
+    context: AuthContext = Depends(require_admin_context),
+    db: Session = Depends(get_db),
+) -> dict:
+    computer = db.get(Computer, computer_id)
+    if computer is None:
+        raise HTTPException(status_code=404, detail="computer not found")
+
+    observations = list(db.scalars(
+        select(Observation).where(Observation.computer_id == computer.id)
+    ))
+    totals = {
+        "deleted_observations": 0,
+        "deleted_decisions": 0,
+        "deleted_media_states": 0,
+        "deleted_devices": 0,
+        "unlinked_agents": 0,
+        "deleted_computers": 0,
+    }
+    for observation in observations:
+        result = delete_observation_record(db, observation, prune_device=True)
+        for key, value in result.items():
+            totals[key] += value
+
+    for agent in list(db.scalars(select(Agent).where(Agent.computer_id == computer.id))):
+        agent.computer_id = None
+        totals["unlinked_agents"] += 1
+
+    db.delete(computer)
+    totals["deleted_computers"] = 1
+    audit(
+        db,
+        request,
+        "inventory.delete_computer",
+        True,
+        user=context.user,
+        details={"computer_id": str(computer_id), **totals},
     )
     db.commit()
     return {"status": "deleted", **totals}
