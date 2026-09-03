@@ -51,6 +51,59 @@ require_cmd() {
     fi
 }
 
+qmp_monitor_cmd() {
+    python3 - "$VMID" "$1" <<'PY'
+import json
+import socket
+import sys
+
+vmid = sys.argv[1]
+command = sys.argv[2]
+socket_path = f"/var/run/qemu-server/{vmid}.qmp"
+
+with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+    sock.connect(socket_path)
+    stream = sock.makefile("rwb")
+
+    greeting = json.loads(stream.readline())
+    if "QMP" not in greeting:
+        raise SystemExit("invalid QMP greeting")
+
+    stream.write((json.dumps({"execute": "qmp_capabilities"}) + "\n").encode("utf-8"))
+    stream.flush()
+    while True:
+        response = json.loads(stream.readline())
+        if "error" in response:
+            raise SystemExit(response["error"].get("desc", "qmp_capabilities failed"))
+        if "return" in response:
+            break
+
+    request = {
+        "execute": "human-monitor-command",
+        "arguments": {
+            "command-line": command,
+        },
+    }
+    stream.write((json.dumps(request) + "\n").encode("utf-8"))
+    stream.flush()
+
+    while True:
+        line = stream.readline()
+        if not line:
+            raise SystemExit("qmp connection closed")
+        response = json.loads(line)
+        if "error" in response:
+            raise SystemExit(response["error"].get("desc", "monitor command failed"))
+        if "return" in response:
+            result = response["return"]
+            if isinstance(result, str):
+                sys.stdout.write(result)
+            elif result not in (None, {}, []):
+                sys.stdout.write(json.dumps(result))
+            break
+PY
+}
+
 vm_running() {
     qm status "${VMID}" 2>/dev/null | awk '{print $2}' | grep -qx running
 }
@@ -62,7 +115,7 @@ detect_usb_bus() {
     fi
 
     local tree
-    tree="$(qm monitor "${VMID}" --command 'info qtree' 2>/dev/null || true)"
+    tree="$(qmp_monitor_cmd 'info qtree' 2>/dev/null || true)"
     if echo "${tree}" | grep -q 'xhci.0'; then
         echo 'xhci.0'
         return
@@ -85,7 +138,7 @@ sanitize_id() {
 
 monitor_cmd() {
     local cmd="$1"
-    qm monitor "${VMID}" --command "${cmd}"
+    qmp_monitor_cmd "${cmd}"
 }
 
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" || $# -lt 1 ]]; then
