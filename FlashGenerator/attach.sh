@@ -164,7 +164,7 @@ fi
 BUS="$(detect_usb_bus)"
 BASE_NAME="$(basename "${IMAGE}" .img)"
 DRIVE_ID="fg_$(sanitize_id "${BASE_NAME}")"
-DEV_ID="${DRIVE_ID}_dev"
+DEV_ID="${DRIVE_ID}"
 
 PLAN="$(python3 "${SCRIPT_DIR}/qemu_attach.py" "${IMAGE}" "${DRIVE_ID}" "${DEV_ID}" "${BUS}")"
 DRIVE_CMD="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["drive_add"])' <<< "${PLAN}")"
