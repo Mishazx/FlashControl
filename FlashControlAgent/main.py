@@ -38,7 +38,8 @@ except ImportError:
 
 
 SCHEMA_VERSION = 1
-PROBE_VERSION = "0.5.0"
+AGENT_VERSION = "1.0.0"
+PROBE_VERSION = "1.0.0"
 
 
 # ---- Константы Win32 ---------------------------------------------------------

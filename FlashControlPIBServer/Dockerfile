@@ -4,6 +4,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
+COPY alembic ./alembic
+COPY alembic.ini ./alembic.ini
 
 RUN addgroup --system flashcontrol \
     && adduser --system --ingroup flashcontrol --no-create-home flashcontrol \

@@ -58,7 +58,6 @@ export function ComputersPage() {
             <span className="badge warning">НЕ УСТАНОВЛЕН</span>
           )}
         </td>
-        <td>{agent?.agent_version}</td>
         <td>{agent?.queue_size ? <span className="badge warning">{agent.queue_size}</span> : agent ? '0' : '—'}</td>
         <td>{translate(agent?.selected_route, routeLabels)}</td>
         <td>{formatDate(agent?.last_seen_at_utc || item.last_seen_at)}</td>
@@ -93,7 +92,7 @@ export function ComputersPage() {
       {data && !loading && (
         <>
           <PanelTable
-            headers={['Компьютер', 'Домен', 'Статус', 'Версия', 'Очередь', 'Маршрут', 'Последняя связь']}
+            headers={['Компьютер', 'Домен', 'Статус', 'Очередь', 'Маршрут', 'Последняя связь']}
             rows={rows}
           />
           <Pagination total={data.total} offset={data.offset} limit={data.limit} onChange={setOffset} />

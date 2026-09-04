@@ -522,7 +522,7 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
                         issued = enroll_with_collector(
                             target_enroll_url,
                             build_enroll_payload(
-                                agent_id, collector.PROBE_VERSION, collector.host_info()
+                                agent_id, collector.AGENT_VERSION, collector.host_info()
                             ),
                             timeout_seconds,
                             transport_ssl_context,
@@ -563,7 +563,7 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
                     try:
                         import main as collector
                         heartbeat_payload = build_heartbeat(
-                            agent_id, collector.PROBE_VERSION, queue.count(),
+                            agent_id, collector.AGENT_VERSION, queue.count(),
                             collector.host_info(),
                             "direct", None,
                         )

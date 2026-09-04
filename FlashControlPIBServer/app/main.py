@@ -18,9 +18,10 @@ from .auth import (
 )
 from .config import ENVIRONMENT
 from .enroll import issue_agent_token
-from .identity import register_computer, resolve_identity
+from .identity import ensure_computer, presence_host, register_computer, resolve_identity
 from .machine_auth import MachinePrincipal, require_machine
 from .models import Agent, AuthSession, AuthUser, Computer, IdentityDecision, MediaState, Observation, PhysicalDevice
+from .ratelimit import enroll_limiter, heartbeat_limiter, ingest_limiter
 from .read_api import router as read_router
 from .schemas import AgentEnrollIn, AgentEnrollOut, AgentHeartbeatIn, IngestResult, ObservationIn
 
@@ -41,6 +42,10 @@ app = FastAPI(
 )
 app.include_router(auth_router)
 app.include_router(read_router)
+if ENVIRONMENT == "development":
+    from .sqladmin_views import mount_development_sqladmin
+
+    mount_development_sqladmin(app)
 web_directory = Path(__file__).parent / "web"
 app.mount("/static", StaticFiles(directory=web_directory), name="static")
 
@@ -261,6 +266,20 @@ def require_ingest_machine(
     return require_machine(request, db)
 
 
+def optional_machine_auth(
+    request: Request,
+    db: Session = Depends(get_db),
+) -> MachinePrincipal | None:
+    """Resolve machine auth when a token is presented, else None.
+
+    Used by the enrollment endpoint so a re-enroll can prove possession of the
+    current token while a first-time enroll may proceed without one.
+    """
+    if not request.headers.get("X-FlashControl-Machine-Token"):
+        return None
+    return require_machine(request, db)
+
+
 def require_management_context(
     context: AuthContext = Depends(require_csrf),
 ) -> AuthContext:
@@ -366,15 +385,18 @@ def update_user(
 def agent_enroll(
     request: Request,
     payload: AgentEnrollIn,
+    _: None = Depends(enroll_limiter),
+    authenticated: MachinePrincipal | None = Depends(optional_machine_auth),
     db: Session = Depends(get_db),
 ) -> AgentEnrollOut:
-    return issue_agent_token(request, payload, db)
+    return issue_agent_token(request, payload, db, authenticated=authenticated)
 
 
 @app.post("/api/v1/agents/heartbeat", status_code=202)
 def agent_heartbeat(
     request: Request,
     payload: AgentHeartbeatIn,
+    _: None = Depends(heartbeat_limiter),
     principal: MachinePrincipal = Depends(require_ingest_machine),
     db: Session = Depends(get_db),
 ) -> dict:
@@ -386,16 +408,28 @@ def agent_heartbeat(
     elif payload.proxy_id != principal.id:
         raise HTTPException(status_code=403, detail="proxy identity mismatch")
     now = datetime.datetime.now(datetime.timezone.utc)
+    computer = ensure_computer(
+        db,
+        payload.hostname,
+        payload.domain,
+        now,
+        presence_host(payload.hostname, payload.domain, payload.current_ips),
+    )
     agent = db.get(Agent, payload.agent_id)
     if agent is None:
-        agent = Agent(id=payload.agent_id, first_seen_at_utc=now, last_seen_at_utc=now)
+        agent = Agent(
+            id=payload.agent_id,
+            first_seen_at_utc=now,
+            last_seen_at_utc=now,
+            hostname=payload.hostname,
+            domain=payload.domain,
+            agent_version=payload.agent_version,
+            current_ips=payload.current_ips,
+            queue_size=payload.queue_size,
+            selected_route=payload.selected_route,
+        )
         db.add(agent)
-    computer = db.scalar(
-        select(Computer)
-        .where(Computer.hostname == payload.hostname)
-        .where(Computer.domain == payload.domain)
-    )
-    agent.computer_id = computer.id if computer else None
+    agent.computer_id = computer.id
     agent.hostname = payload.hostname
     agent.domain = payload.domain
     agent.agent_version = payload.agent_version
@@ -416,6 +450,7 @@ def ingest_observations(
     forwarded_agent_id: uuid.UUID | None = Header(
         default=None, alias="X-FlashControl-Forwarded-Agent-ID"
     ),
+    _: None = Depends(ingest_limiter),
     principal: MachinePrincipal = Depends(require_ingest_machine),
     db: Session = Depends(get_db),
 ) -> IngestResult:

@@ -152,7 +152,10 @@ def require_machine(request: Request, db: Session | None = None) -> MachinePrinc
             raise HTTPException(status_code=401, detail="invalid machine identity") from exc
         if kind == "agent" and _issued_agent_token_matches(db, principal_id, supplied):
             return MachinePrincipal(principal_id, kind)
-        if _shared_token_matches(supplied):
+        # The shared dev/test token is a convenience for local tooling only. It
+        # must never act as a fallback in production, where machines are
+        # authenticated by enrolled certificate identity (mTLS).
+        if ENVIRONMENT in ("development", "test") and _shared_token_matches(supplied):
             return MachinePrincipal(principal_id, kind)
         raise HTTPException(status_code=401, detail="invalid machine credentials")
 

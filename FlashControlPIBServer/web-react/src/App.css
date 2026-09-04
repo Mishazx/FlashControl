@@ -176,6 +176,8 @@ button { color: inherit; }
 /* Toolbar & Fields */
 .toolbar { margin-bottom: 14px; display: flex; flex-wrap: wrap; gap: 10px; }
 .toolbar .push-right { margin-left: auto; }
+.button:disabled { opacity: .45; cursor: default; }
+.compare-button { color: var(--accent); border-color: var(--accent-2); background: var(--accent-soft); }
 .field { min-height: 39px; padding: 0 12px; color: var(--text); border: 1px solid var(--line); border-radius: 9px; outline: none; background: var(--panel); font-size: 12px; transition: border-color .15s, box-shadow .15s; }
 .field:focus { border-color: var(--accent-2); box-shadow: 0 0 0 3px var(--accent-soft); }
 .field.search { min-width: 260px; }
@@ -186,6 +188,8 @@ table { width: 100%; border-collapse: collapse; }
 th { padding: 12px 16px; color: var(--muted-2); background: var(--th-bg); font-size: 9px; letter-spacing: .11em; text-align: left; text-transform: uppercase; white-space: nowrap; }
 .hint { cursor: help; }
 td { padding: 14px 16px; border-top: 1px solid var(--line); color: var(--text-2); font-size: 12px; vertical-align: middle; }
+.selection-cell { width: 40px; padding-right: 0; }
+.selection-cell input { width: 16px; height: 16px; margin: 0; accent-color: var(--accent-2); cursor: pointer; }
 tbody tr { transition: background .15s; }
 tbody tr.clickable { cursor: pointer; }
 tbody tr.clickable:hover { background: var(--tr-hover); }
@@ -206,6 +210,17 @@ tbody tr.clickable:hover { background: var(--tr-hover); }
 .pagination { padding: 13px 16px; border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; color: var(--muted); font-size: 11px; }
 .pagination .button { min-height: 32px; padding: 0 11px; }
 .pagination .button:disabled { opacity: .35; cursor: default; }
+
+/* Device comparison */
+.comparison-backdrop { position: fixed; z-index: 50; inset: 0; display: grid; place-items: center; padding: 24px; background: var(--backdrop); backdrop-filter: blur(3px); }
+.comparison { width: min(1180px, 100%); max-height: min(780px, calc(100vh - 48px)); display: flex; flex-direction: column; box-shadow: 0 24px 80px rgba(0,0,0,.38); }
+.comparison-body { max-height: calc(min(780px, 100vh - 48px) - 58px); overflow: auto; }
+.comparison-table th { vertical-align: top; min-width: 180px; }
+.comparison-table th:first-child { min-width: 205px; }
+.comparison-table .secondary { max-width: 190px; overflow: hidden; text-overflow: ellipsis; }
+.comparison-label { color: var(--muted); font-weight: 650; white-space: nowrap; }
+.comparison-table tr.different td:not(:first-child) { color: var(--warning); background: var(--warning-soft); }
+.comparison-table tr.matching td:not(:first-child) { color: var(--accent); }
 
 /* Drawer */
 .drawer-backdrop { position: fixed; inset: 0; z-index: 39; background: var(--backdrop); backdrop-filter: blur(2px); }

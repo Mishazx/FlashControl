@@ -20,6 +20,9 @@ export function DevicesPage() {
   const [hash, setHash] = useState('');
   const [status, setStatus] = useState('');
   const [drawerId, setDrawerId] = useState<string | null>(null);
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [comparedDevices, setComparedDevices] = useState<Device[] | null>(null);
+  const [compareLoading, setCompareLoading] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -36,10 +39,38 @@ export function DevicesPage() {
 
   useEffect(() => { load(); }, [load]);
 
+  useEffect(() => {
+    const visibleIds = new Set(data?.items.map((item) => item.id) || []);
+    setSelectedIds((ids) => ids.filter((id) => !visibleIds.size || visibleIds.has(id)));
+  }, [data]);
+
   const applyFilter = () => { setOffset(0); load(); };
+
+  const toggleSelection = (id: string) => {
+    setSelectedIds((ids) => ids.includes(id) ? ids.filter((value) => value !== id) : [...ids, id]);
+  };
+
+  const compareSelected = async () => {
+    if (selectedIds.length < 2) return;
+    setCompareLoading(true);
+    try {
+      const devices = await Promise.all(selectedIds.map((id) => api<Device>(`/devices/${id}`)));
+      setComparedDevices(devices);
+    } finally {
+      setCompareLoading(false);
+    }
+  };
 
   const rows = data?.items.map((item) => (
     <tr key={item.id} className="clickable" onClick={() => setDrawerId(item.id)}>
+      <td className="selection-cell" onClick={(event) => event.stopPropagation()}>
+        <input
+          aria-label={`Выбрать ${[item.vendor, item.product].filter(Boolean).join(' ') || item.id} для сравнения`}
+          type="checkbox"
+          checked={selectedIds.includes(item.id)}
+          onChange={() => toggleSelection(item.id)}
+        />
+      </td>
       <td>
         <span className="primary">{[item.vendor, item.product].filter(Boolean).join(' ') || 'Неизвестное устройство'}</span>
         <span className="secondary mono">{item.id}</span>
@@ -71,20 +102,78 @@ export function DevicesPage() {
           <option value="provisional">{translate('provisional', deviceStatusLabels)}</option>
         </select>
         <button className="button" onClick={applyFilter}>Применить</button>
+        <button className="button compare-button" disabled={selectedIds.length < 2 || compareLoading} onClick={compareSelected}>
+          {compareLoading ? 'Загрузка…' : `Сравнить (${selectedIds.length})`}
+        </button>
+        {selectedIds.length > 0 && <button className="button ghost" onClick={() => setSelectedIds([])}>Снять выбор</button>}
       </div>
       {loading && <Loading />}
       {error && <ErrorPanel message={error} />}
       {data && !loading && (
         <>
           <PanelTable
-            headers={['Устройство', 'VID:PID', 'Storage serial', 'Hardware hash', { label: 'Confidence', title: identityConfidenceHints.high }, 'Последнее наблюдение']}
+            headers={['', 'Устройство', 'VID:PID', 'Storage serial', 'Hardware hash', { label: 'Confidence', title: identityConfidenceHints.high }, 'Последнее наблюдение']}
             rows={rows}
           />
           <Pagination total={data.total} offset={data.offset} limit={data.limit} onChange={setOffset} />
         </>
       )}
+      {comparedDevices && <DeviceComparison devices={comparedDevices} onClose={() => setComparedDevices(null)} />}
       <DeviceDrawer id={drawerId} onClose={() => setDrawerId(null)} onDelete={user?.role === 'admin' ? handleDelete : undefined} />
     </Shell>
+  );
+}
+
+function DeviceComparison({ devices, onClose }: { devices: Device[]; onClose: () => void }) {
+  useEffect(() => {
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [onClose]);
+
+  const deviceName = (device: Device) => [device.vendor, device.product].filter(Boolean).join(' ') || 'Неизвестное устройство';
+  const list = (items: string[] | undefined) => items?.join(', ') || '—';
+  const rows: { label: string; values: string[]; mono?: boolean }[] = [
+    { label: 'Производитель и модель', values: devices.map(deviceName) },
+    { label: 'VID:PID', values: devices.map((d) => d.vid || d.pid ? `${d.vid || '—'}:${d.pid || '—'}` : '—'), mono: true },
+    { label: 'Серийный номер накопителя', values: devices.map((d) => d.storage_serial || '—'), mono: true },
+    { label: 'Аппаратный хеш', values: devices.map((d) => d.hardware_stable_sha256 || '—'), mono: true },
+    { label: 'Статус', values: devices.map((d) => translate(d.status, deviceStatusLabels)) },
+    { label: 'Уверенность идентификации', values: devices.map((d) => translate(d.identity_confidence, confidenceLabels)) },
+    { label: 'Впервые замечена', values: devices.map((d) => formatDate(d.first_seen_at)) },
+    { label: 'Последнее наблюдение', values: devices.map((d) => formatDate(d.last_seen_at)) },
+    { label: 'Использовалась на ПК', values: devices.map((d) => list(d.used_on_computers?.map((computer) => computer.hostname))) },
+    { label: 'Пользователи', values: devices.map((d) => list(d.seen_user_sids)) },
+    { label: 'Состояний носителя', values: devices.map((d) => String(d.media_states?.length || 0)) },
+    { label: 'Наблюдений', values: devices.map((d) => String(d.recent_observations?.length || 0)) },
+  ];
+
+  return (
+    <div className="comparison-backdrop" onMouseDown={onClose}>
+      <section className="comparison panel" role="dialog" aria-modal="true" aria-label="Сравнение USB-устройств" onMouseDown={(event) => event.stopPropagation()}>
+        <div className="panel-head">
+          <div>
+            <h2>Сравнение устройств</h2>
+            <p>Подсвечены только параметры, в которых выбранные флешки отличаются.</p>
+          </div>
+          <button className="button ghost push" onClick={onClose}>Закрыть</button>
+        </div>
+        <div className="table-wrap comparison-body">
+          <table className="comparison-table">
+            <thead><tr><th>Параметр</th>{devices.map((device) => <th key={device.id}>{deviceName(device)}<span className="secondary mono">{device.id}</span></th>)}</tr></thead>
+            <tbody>{rows.map((row) => {
+              const different = new Set(row.values).size > 1;
+              return <tr key={row.label} className={different ? 'different' : 'matching'}>
+                <td className="comparison-label">{row.label}</td>
+                {row.values.map((value, index) => <td key={devices[index].id} className={row.mono ? 'mono' : ''}>{value}</td>)}
+              </tr>;
+            })}</tbody>
+          </table>
+        </div>
+      </section>
+    </div>
   );
 }
 

@@ -44,6 +44,55 @@ class MachineMtlsTests(unittest.TestCase):
         self.assertEqual(caught.exception.status_code, 401)
 
 
+class MachineTokenSharedTokenTests(unittest.TestCase):
+    def _headers(self, agent_id="22222222-2222-2222-2222-222222222222"):
+        return {
+            "X-FlashControl-Machine-Token": "shared-dev-token",
+            "X-FlashControl-Machine-ID": agent_id,
+            "X-FlashControl-Machine-Kind": "agent",
+        }
+
+    def test_shared_token_accepted_in_development(self):
+        from app import machine_auth
+
+        with patch.object(machine_auth, "MACHINE_AUTH_MODE", "token"), \
+             patch.object(machine_auth, "ENVIRONMENT", "development"), \
+             patch.object(machine_auth, "DEV_MACHINE_TOKEN", "shared-dev-token"):
+            principal = machine_auth.require_machine(request(self._headers()))
+        self.assertEqual(str(principal.id), "22222222-2222-2222-2222-222222222222")
+
+    def test_shared_token_accepted_in_test(self):
+        from app import machine_auth
+
+        with patch.object(machine_auth, "MACHINE_AUTH_MODE", "token"), \
+             patch.object(machine_auth, "ENVIRONMENT", "test"), \
+             patch.object(machine_auth, "DEV_MACHINE_TOKEN", "shared-dev-token"):
+            principal = machine_auth.require_machine(request(self._headers()))
+        self.assertEqual(principal.kind, "agent")
+
+    def test_shared_token_rejected_in_production(self):
+        from app import machine_auth
+
+        with patch.object(machine_auth, "MACHINE_AUTH_MODE", "token"), \
+             patch.object(machine_auth, "ENVIRONMENT", "production"), \
+             patch.object(machine_auth, "DEV_MACHINE_TOKEN", "shared-dev-token"):
+            with self.assertRaises(HTTPException) as caught:
+                machine_auth.require_machine(request(self._headers()))
+        self.assertEqual(caught.exception.status_code, 401)
+
+    def test_shared_token_requires_matching_value(self):
+        from app import machine_auth
+
+        headers = self._headers()
+        headers["X-FlashControl-Machine-Token"] = "wrong-token"
+        with patch.object(machine_auth, "MACHINE_AUTH_MODE", "token"), \
+             patch.object(machine_auth, "ENVIRONMENT", "development"), \
+             patch.object(machine_auth, "DEV_MACHINE_TOKEN", "shared-dev-token"):
+            with self.assertRaises(HTTPException) as caught:
+                machine_auth.require_machine(request(headers))
+        self.assertEqual(caught.exception.status_code, 401)
+
+
 class ClientHostTests(unittest.TestCase):
     def test_untrusted_peer_headers_are_ignored(self):
         from app import machine_auth

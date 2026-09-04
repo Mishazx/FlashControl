@@ -26,6 +26,7 @@ PASSWORD_R = 8
 PASSWORD_P = 1
 LOGIN_WINDOW = datetime.timedelta(minutes=5)
 LOGIN_FAILURE_LIMIT = 5
+LOGIN_IP_FAILURE_LIMIT = 20
 DUMMY_PASSWORD_HASH = (
     "scrypt$16384$8$1$00000000000000000000000000000000$"
     "cfcf41dd616a7d1da01df9dff8142141be5a408b029e68a13118fd27839a8dda"
@@ -287,6 +288,19 @@ def login(payload: LoginRequest, request: Request, response: Response,
         .where(AuditLog.created_at_utc >= since)
     ) or 0
     if failed_count >= LOGIN_FAILURE_LIMIT:
+        raise HTTPException(status_code=429, detail="too many login attempts")
+
+    # Bound distributed enumeration: a single source IP must not be allowed to
+    # keep probing many different usernames within the window, even if no single
+    # username exceeds its own failure limit.
+    ip_failed_count = db.scalar(
+        select(func.count()).select_from(AuditLog)
+        .where(AuditLog.action == "auth.login")
+        .where(AuditLog.success.is_(False))
+        .where(AuditLog.source_ip == source_ip)
+        .where(AuditLog.created_at_utc >= since)
+    ) or 0
+    if ip_failed_count >= LOGIN_IP_FAILURE_LIMIT:
         raise HTTPException(status_code=429, detail="too many login attempts")
 
     user = db.scalar(select(AuthUser).where(AuthUser.username == username))

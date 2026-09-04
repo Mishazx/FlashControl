@@ -13,6 +13,8 @@ from app.identity import (
     _new_physical_device,
     classify_pair,
     computer_key,
+    ensure_computer,
+    presence_host,
     register_computer,
     resolve_identity,
     serial_identifiers,
@@ -66,6 +68,18 @@ class IdentityUnitTests(unittest.TestCase):
         key1 = computer_key({"hostname": "  PC-001  ", "domain": "  CORP  "})
         key2 = computer_key({"hostname": "PC-001", "domain": "CORP"})
         self.assertEqual(key1, key2)
+
+    def test_presence_host_includes_domain_and_ips(self):
+        host = presence_host("PC-001", "CORP", ["10.0.0.1", "10.0.0.1"])
+        self.assertEqual(host["hostname"], "PC-001")
+        self.assertEqual(host["domain"], "CORP")
+        self.assertEqual(host["domain_name"], "CORP")
+        self.assertEqual(host["ip_addresses"], ["10.0.0.1", "10.0.0.1"])
+
+    def test_presence_host_omits_empty_domain(self):
+        host = presence_host("PC-001", None)
+        self.assertNotIn("domain", host)
+        self.assertEqual(host["ip_addresses"], [])
 
     def test_serial_identifiers_storage_serial(self):
         device = {"storage": {"serial": "STOR-12345"}}
@@ -271,6 +285,49 @@ class IdentityIntegrationTests(unittest.TestCase):
         )
         return obs
 
+    def test_ensure_computer_creates_and_reuses_by_key(self):
+        now = datetime.datetime(2026, 9, 4, 8, 0, tzinfo=datetime.timezone.utc)
+        first = ensure_computer(
+            self.db, "Presence-PC", "CORP", now,
+            presence_host("Presence-PC", "CORP", ["10.0.0.8"]),
+        )
+        self.db.flush()
+        later = datetime.datetime(2026, 9, 4, 9, 0, tzinfo=datetime.timezone.utc)
+        second = ensure_computer(
+            self.db, "presence-pc", "corp", later,
+            presence_host("presence-pc", "corp", ["10.0.0.9"]),
+        )
+        self.db.flush()
+        self.assertEqual(first.id, second.id)
+        self.assertEqual(second.hostname, "presence-pc")
+        self.assertEqual(second.last_seen_at, later)
+        self.assertEqual(second.last_host["ip_addresses"], ["10.0.0.9"])
+
+    def test_ensure_computer_keeps_observation_host_fields(self):
+        now = datetime.datetime(2026, 9, 4, 8, 0, tzinfo=datetime.timezone.utc)
+        computer = ensure_computer(
+            self.db, "merge-pc", None, now,
+            {"hostname": "merge-pc", "os": "Windows", "ip_addresses": ["10.0.0.1"]},
+        )
+        self.db.flush()
+        ensure_computer(
+            self.db, "merge-pc", None, now,
+            presence_host("merge-pc", None, ["10.0.0.2"]),
+        )
+        self.db.flush()
+        self.assertEqual(computer.last_host["os"], "Windows")
+        self.assertEqual(computer.last_host["ip_addresses"], ["10.0.0.2"])
+
+    def test_register_computer_reuses_presence_computer(self):
+        now = datetime.datetime(2026, 9, 4, 8, 0, tzinfo=datetime.timezone.utc)
+        presence = ensure_computer(self.db, "test-pc-reg-presence", "test-reg-presence", now)
+        self.db.flush()
+        obs = self._make_obs("hw-1", "media-1", "ms-1", "reg-presence")
+        computer = register_computer(self.db, obs)
+        self.db.flush()
+        self.assertEqual(presence.id, computer.id)
+        self.assertEqual(obs.computer_id, presence.id)
+
     def test_register_computer_creates_new(self):
         obs = self._make_obs("hw-1", "media-1", "ms-1", "reg-new")
         computer = register_computer(self.db, obs)
@@ -470,6 +527,40 @@ class IdentityIntegrationTests(unittest.TestCase):
         self.db.commit()
 
         self.assertEqual(obs1.media_state_id, obs2.media_state_id)
+
+    def test_same_computer_changing_media_reuses_provisional_device(self):
+        # Same computer + same hardware but changing media no longer spawns an
+        # unbounded set of provisional devices; a single provisional device is
+        # reused per (computer, hardware).
+        first = self._make_obs("hw-reuse", "media-a", "ms-a", "ri-reuse")
+        self.db.add(first)
+        self.db.flush()
+        resolve_identity(self.db, first)
+        self.db.commit()
+
+        second = self._make_obs("hw-reuse", "media-b", "ms-b", "ri-reuse")
+        self.db.add(second)
+        self.db.flush()
+        resolve_identity(self.db, second)
+        self.db.commit()
+
+        self.assertEqual(second.physical_device_id, first.physical_device_id)
+        self.assertNotEqual(second.media_state_id, first.media_state_id)
+
+    def test_different_computer_changing_media_keeps_separate_devices(self):
+        first = self._make_obs("hw-reuse2", "media-a", "ms-a", "ri-reuse2-a")
+        self.db.add(first)
+        self.db.flush()
+        resolve_identity(self.db, first)
+        self.db.commit()
+
+        second = self._make_obs("hw-reuse2", "media-a", "ms-b", "ri-reuse2-b")
+        self.db.add(second)
+        self.db.flush()
+        resolve_identity(self.db, second)
+        self.db.commit()
+
+        self.assertNotEqual(second.physical_device_id, first.physical_device_id)
 
     def test_latest_observations_limit_200(self):
         for i in range(250):

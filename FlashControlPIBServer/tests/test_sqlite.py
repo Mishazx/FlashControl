@@ -7,9 +7,6 @@ import uuid
 
 TEST_DIRECTORY = tempfile.mkdtemp(prefix="flashcontrol-server-")
 TEST_DATABASE = os.path.join(TEST_DIRECTORY, "test.db")
-os.environ["FLASHCONTROL_ENVIRONMENT"] = "test"
-os.environ["FLASHCONTROL_DATABASE_URL"] = "sqlite:///" + TEST_DATABASE.replace("\\", "/")
-os.environ["FLASHCONTROL_DEV_MACHINE_TOKEN"] = "test-machine-token"
 
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -49,6 +46,13 @@ def payload_event_id(payload):
 class SqliteApiTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        # Guarantee a clean, isolated instance regardless of any pre-existing
+        # SQLite file (the test may share the process-wide engine). Dropping all
+        # tables before the app's lifespan runs keeps repeated invocations
+        # idempotent; the app startup applies the full Alembic schema.
+        from app.models import Base
+        Base.metadata.drop_all(bind=engine)
+
         cls.client_context = TestClient(app)
         cls.client = cls.client_context.__enter__()
         cls.agent_id = uuid.uuid4()
@@ -97,7 +101,12 @@ class SqliteApiTests(unittest.TestCase):
         self.assertEqual(second.status_code, 202)
 
         with SessionLocal() as session:
-            self.assertEqual(session.get(Agent, agent_id).queue_size, 0)
+            agent = session.get(Agent, agent_id)
+            self.assertEqual(agent.queue_size, 0)
+            self.assertIsNotNone(agent.computer_id)
+            computer = session.get(Computer, agent.computer_id)
+            self.assertEqual(computer.hostname, "heartbeat-host")
+            self.assertEqual(computer.domain, "CORP")
 
         listing = self.client.get(
             "/api/v1/agents", params={"status": "online", "hostname": "heartbeat-host"}
@@ -105,6 +114,17 @@ class SqliteApiTests(unittest.TestCase):
         self.assertEqual(listing.status_code, 200)
         self.assertEqual(listing.json()["total"], 1)
         self.assertEqual(listing.json()["items"][0]["status"], "online")
+
+        computers = self.client.get("/api/v1/computers", params={"hostname": "heartbeat-host"})
+        self.assertEqual(computers.status_code, 200)
+        self.assertEqual(computers.json()["total"], 1)
+        self.assertEqual(computers.json()["items"][0]["hostname"], "heartbeat-host")
+        self.assertIsNotNone(computers.json()["items"][0]["agent"])
+        self.assertEqual(computers.json()["items"][0]["agent"]["status"], "online")
+        self.assertEqual(
+            listing.json()["items"][0]["computer_id"],
+            computers.json()["items"][0]["id"],
+        )
         self.assertEqual(
             self.client.post(
                 "/api/v1/agents/heartbeat", json=dict(payload, current_ips=["bad-ip"])
@@ -152,6 +172,111 @@ class SqliteApiTests(unittest.TestCase):
             },
         )
         self.assertEqual(stolen.status_code, 403)
+        guest.close()
+
+    def test_enroll_creates_computer_without_observations(self):
+        guest = TestClient(app)
+        agent_id = uuid.uuid4()
+        enrolled = guest.post(
+            "/api/v1/agents/enroll",
+            json={
+                "agent_id": str(agent_id),
+                "agent_version": "0.4.0",
+                "hostname": "presence-pc",
+                "domain": "CORP",
+                "current_ips": ["10.20.30.60"],
+            },
+        )
+        self.assertEqual(enrolled.status_code, 200)
+        computers = self.client.get("/api/v1/computers", params={"hostname": "presence-pc"})
+        self.assertEqual(computers.status_code, 200)
+        self.assertEqual(computers.json()["total"], 1)
+        item = computers.json()["items"][0]
+        self.assertEqual(item["hostname"], "presence-pc")
+        self.assertEqual(item["domain"], "CORP")
+        self.assertEqual(item["agent"]["id"], str(agent_id))
+        guest.close()
+
+    def test_observation_reuses_computer_created_by_heartbeat(self):
+        hostname = "reuse-heartbeat-pc"
+        payload = {
+            "agent_id": str(self.agent_id),
+            "agent_version": "0.4.0",
+            "hostname": hostname,
+            "domain": None,
+            "current_ips": ["10.20.30.70"],
+            "queue_size": 0,
+            "selected_route": "direct",
+            "proxy_id": None,
+        }
+        self.assertEqual(self.client.post("/api/v1/agents/heartbeat", json=payload).status_code, 202)
+        computers = self.client.get("/api/v1/computers", params={"hostname": hostname})
+        self.assertEqual(computers.json()["total"], 1)
+        computer_id = computers.json()["items"][0]["id"]
+
+        event_id = uuid.uuid4()
+        ingested = self.client.post(
+            "/api/v1/observations",
+            json=observation_payload(event_id, hostname=hostname),
+        )
+        self.assertEqual(ingested.status_code, 200)
+        computers = self.client.get("/api/v1/computers", params={"hostname": hostname})
+        self.assertEqual(computers.json()["total"], 1)
+        self.assertEqual(computers.json()["items"][0]["id"], computer_id)
+        detail = self.client.get("/api/v1/computers/" + computer_id)
+        self.assertEqual(detail.json()["recent_observations"][0]["event_id"], str(event_id))
+
+    def test_re_enroll_rotates_token_only_with_current_token(self):
+        guest = TestClient(app)
+        agent_id = uuid.uuid4()
+        enrolled = guest.post(
+            "/api/v1/agents/enroll",
+            json={
+                "agent_id": str(agent_id),
+                "agent_version": "0.4.0",
+                "hostname": "re-enroll-pc",
+                "domain": "CORP",
+                "current_ips": ["10.20.30.50"],
+            },
+        )
+        self.assertEqual(enrolled.status_code, 200)
+        first_token = enrolled.json()["machine_token"]
+        self.assertTrue(first_token)
+
+        # Re-enroll without the current token must be rejected (prevents an
+        # attacker on the enrollment network from silently rotating the token).
+        without = guest.post(
+            "/api/v1/agents/enroll",
+            json={
+                "agent_id": str(agent_id),
+                "agent_version": "0.5.0",
+                "hostname": "re-enroll-pc",
+                "domain": "CORP",
+                "current_ips": ["10.20.30.50"],
+            },
+        )
+        self.assertEqual(without.status_code, 401)
+
+        # Re-enroll authenticated with the current token rotates it.
+        with_token = guest.post(
+            "/api/v1/agents/enroll",
+            json={
+                "agent_id": str(agent_id),
+                "agent_version": "0.5.0",
+                "hostname": "re-enroll-pc",
+                "domain": "CORP",
+                "current_ips": ["10.20.30.50"],
+            },
+            headers={
+                "X-FlashControl-Machine-Token": first_token,
+                "X-FlashControl-Machine-ID": str(agent_id),
+                "X-FlashControl-Machine-Kind": "agent",
+            },
+        )
+        self.assertEqual(with_token.status_code, 200)
+        new_token = with_token.json()["machine_token"]
+        self.assertTrue(new_token)
+        self.assertNotEqual(first_token, new_token)
         guest.close()
 
     def test_web_ui_and_assets_are_served(self):
@@ -715,6 +840,21 @@ class SqliteApiTests(unittest.TestCase):
         )
         self.assertEqual(audit_response.status_code, 200)
         self.assertGreaterEqual(audit_response.json()["total"], 5)
+        guest.close()
+
+    def test_distributed_username_enumeration_from_single_ip_is_blocked(self):
+        guest = TestClient(app, client=("10.0.0.50", 50000))
+        for i in range(20):
+            response = guest.post(
+                "/api/v1/auth/login",
+                json={"username": "probe-%d" % i, "password": "incorrect password value"},
+            )
+            self.assertIn(response.status_code, (401, 429))
+        blocked = guest.post(
+            "/api/v1/auth/login",
+            json={"username": "probe-last", "password": "incorrect password value"},
+        )
+        self.assertEqual(blocked.status_code, 429)
         guest.close()
 
     def test_login_audit_uses_forwarded_client_ip_from_trusted_proxy(self):

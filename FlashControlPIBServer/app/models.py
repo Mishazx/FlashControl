@@ -197,5 +197,9 @@ Index("ix_observations_user_sid", Observation.user_sid)
 Index("ix_observations_hardware_stable_hash", Observation.hardware_stable_sha256)
 Index("ix_observations_computer_id", Observation.computer_id)
 Index("ix_observations_physical_device_id", Observation.physical_device_id)
+Index(
+    "ix_observations_physical_device_seen",
+    Observation.physical_device_id, Observation.observed_at_utc,
+)
 Index("ix_audit_log_created_at", AuditLog.created_at_utc)
 Index("ix_audit_log_action", AuditLog.action)

@@ -40,6 +40,11 @@ python -m pip install -r requirements.txt
 python -m uvicorn app.main:app --reload
 ```
 
+After logging in as a local user with the `admin` role, the development server
+also exposes SQLAdmin at `http://127.0.0.1:8000/sqladmin`. It reuses the normal
+FlashControl session and is never mounted when `FLASHCONTROL_ENVIRONMENT` is
+`production` or `test`.
+
 SQLite is rejected when `FLASHCONTROL_ENVIRONMENT=production`. Production uses
 PostgreSQL and requires applying the bootstrap migration:
 

@@ -112,24 +112,57 @@ def classify_pair(current: Observation, previous: Observation) -> Classification
     return Classification("DIFFERENT", 0.0, False, ["different_hardware"])
 
 
-def register_computer(db: Session, observation: Observation) -> Computer:
-    key = computer_key(observation.host)
+def presence_host(hostname: str, domain: str | None, current_ips: list | None = None) -> dict:
+    host = {
+        "hostname": hostname,
+        "ip_addresses": list(current_ips or []),
+    }
+    if domain:
+        host["domain"] = domain
+        host["domain_name"] = domain
+    return host
+
+
+def ensure_computer(
+    db: Session,
+    hostname: str,
+    domain: str | None,
+    seen_at: datetime.datetime,
+    host: dict | None = None,
+) -> Computer:
+    hostname = str(hostname or "unknown")
+    if domain is not None:
+        domain = str(domain).strip() or None
+    key = computer_key({"hostname": hostname, "domain": domain, "domain_name": domain})
     computer = db.scalar(select(Computer).where(Computer.computer_key == key))
-    hostname = str(observation.host.get("hostname") or observation.host.get("computer_name") or "unknown")
-    domain = observation.host.get("domain") or observation.host.get("domain_name")
+    snapshot = dict(host or presence_host(hostname, domain))
+    snapshot.setdefault("hostname", hostname)
+    if domain:
+        snapshot.setdefault("domain", domain)
+        snapshot.setdefault("domain_name", domain)
     if computer is None:
         computer = Computer(
             id=uuid.uuid4(), computer_key=key, hostname=hostname, domain=domain,
-            first_seen_at=observation.observed_at_utc,
-            last_seen_at=observation.observed_at_utc, last_host=observation.host,
+            first_seen_at=seen_at, last_seen_at=seen_at, last_host=snapshot,
         )
         db.add(computer)
         db.flush()
-    else:
-        computer.hostname = hostname
-        computer.domain = domain
-        computer.last_seen_at = _latest(computer.last_seen_at, observation.observed_at_utc)
-        computer.last_host = observation.host
+        return computer
+    computer.hostname = hostname
+    computer.domain = domain
+    computer.last_seen_at = _latest(computer.last_seen_at, seen_at)
+    merged = dict(computer.last_host or {})
+    merged.update(snapshot)
+    computer.last_host = merged
+    return computer
+
+
+def register_computer(db: Session, observation: Observation) -> Computer:
+    hostname = str(observation.host.get("hostname") or observation.host.get("computer_name") or "unknown")
+    domain = observation.host.get("domain") or observation.host.get("domain_name")
+    computer = ensure_computer(
+        db, hostname, domain, observation.observed_at_utc, observation.host,
+    )
     observation.computer_id = computer.id
     return computer
 
@@ -143,6 +176,36 @@ def _new_physical_device(observation: Observation) -> PhysicalDevice:
         last_seen_at=observation.observed_at_utc,
         representative_device=observation.device,
     )
+
+
+def _reusable_provisional_device(db: Session, observation: Observation) -> PhysicalDevice | None:
+    """Reuse an existing provisional device for the same hardware on the current
+    computer instead of minting a new one.
+
+    When identity cannot be auto-linked (e.g. same hardware but changing media
+    state on one computer), always creating a fresh PhysicalDevice grows the
+    provisional set without bound. Bounding it to one provisional device per
+    (computer, hardware) keeps the row count stable while preserving the
+    deliberately separate devices across different computers.
+    """
+    hardware = observation.hardware_stable_sha256
+    if not hardware or observation.computer_id is None:
+        return None
+    prior = db.scalar(
+        select(Observation)
+        .where(Observation.id != observation.id)
+        .where(Observation.computer_id == observation.computer_id)
+        .where(Observation.hardware_stable_sha256 == hardware)
+        .where(Observation.physical_device_id.is_not(None))
+        .order_by(desc(Observation.observed_at_utc))
+        .limit(1)
+    )
+    if prior is None or prior.physical_device_id is None:
+        return None
+    physical = db.get(PhysicalDevice, prior.physical_device_id)
+    if physical is None or physical.status != "provisional":
+        return None
+    return physical
 
 
 def _latest_observations(db: Session, observation: Observation) -> list[Observation]:
@@ -224,9 +287,14 @@ def resolve_identity(db: Session, observation: Observation) -> IdentityDecision:
         physical.last_seen_at = _latest(physical.last_seen_at, observation.observed_at_utc)
         physical.identity_confidence = "high" if classification.result == "SAME" else "likely"
     else:
-        physical = _new_physical_device(observation)
-        db.add(physical)
-        db.flush()
+        physical = _reusable_provisional_device(db, observation)
+        if physical is None:
+            physical = _new_physical_device(observation)
+            db.add(physical)
+            db.flush()
+        else:
+            physical.last_seen_at = _latest(physical.last_seen_at, observation.observed_at_utc)
+            physical.representative_device = observation.device
 
     observation.physical_device_id = physical.id
     media_state = _get_or_create_media_state(db, physical, observation)

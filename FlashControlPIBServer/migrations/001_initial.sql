@@ -145,3 +145,14 @@ CREATE TABLE IF NOT EXISTS agents (
 
 CREATE INDEX IF NOT EXISTS ix_agents_computer_id ON agents (computer_id);
 CREATE INDEX IF NOT EXISTS ix_agents_last_seen_at_utc ON agents (last_seen_at_utc);
+
+-- This SQL bootstrap is the same baseline as Alembic revision
+-- 2a9ae8467581. Mark it as applied so the application does not attempt to
+-- create the initial schema again at startup.
+CREATE TABLE IF NOT EXISTS alembic_version (
+    version_num VARCHAR(32) NOT NULL
+);
+
+INSERT INTO alembic_version (version_num)
+SELECT '2a9ae8467581'
+WHERE NOT EXISTS (SELECT 1 FROM alembic_version);

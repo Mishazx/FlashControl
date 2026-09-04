@@ -1,4 +1,3 @@
-import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
@@ -18,12 +17,6 @@ config = context.config
 # This line sets up loggers basically.
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
-
-# Use the application's configured database URL, overriding the .ini default
-# unless the URL was explicitly provided on the command line or environment.
-database_url = os.environ.get("FLASHCONTROL_DATABASE_URL")
-if database_url:
-    config.set_main_option("sqlalchemy.url", database_url)
 
 # add your model's MetaData object here
 # for 'autogenerate' support

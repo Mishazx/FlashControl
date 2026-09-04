@@ -44,9 +44,11 @@ export interface Device {
   identity_confidence?: string;
   status?: string;
   last_seen_at?: string;
+  first_seen_at?: string;
   used_on_computers?: { id: string; hostname: string }[];
   seen_user_sids?: string[];
   media_states?: MediaState[];
+  recent_observations?: Observation[];
   representative_device?: unknown;
 }
 
