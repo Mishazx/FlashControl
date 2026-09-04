@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import uuid
+from urllib.parse import urlsplit
 
 
 def persist_agent_id(path, requested=None):
@@ -93,6 +94,29 @@ def collector_api_url(server_url, configured_url, suffix):
     if server_url and server_url.rstrip("/").endswith(marker):
         return server_url.rstrip("/")[:-len(marker)] + suffix
     return ""
+
+
+def observations_url(server_url):
+    """Accept either a Collector root URL or the observations endpoint.
+
+    Keeping the configured value as a root URL lets one package target a DNS
+    name (or an IP address) without making deployers repeat API path details.
+    Existing configurations containing the complete endpoint remain unchanged.
+    """
+    value = (server_url or "").strip()
+    if not value:
+        return ""
+
+    parsed = urlsplit(value)
+    if (
+        parsed.scheme in ("http", "https")
+        and parsed.netloc
+        and parsed.path in ("", "/")
+        and not parsed.query
+        and not parsed.fragment
+    ):
+        return value.rstrip("/") + "/api/v1/observations"
+    return value
 
 
 def heartbeat_url(server_url, configured_url=""):

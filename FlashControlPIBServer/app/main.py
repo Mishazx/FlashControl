@@ -151,10 +151,12 @@ def unpack_payload(payload: Any) -> list[ObservationIn]:
 
 def observation_hash_value(item: ObservationIn, column: str) -> str | None:
     aliases = {
-        "hardware_stable_sha256": ("hardware_stable_sha256", "hardware_stable"),
+        "hardware_stable_sha256": ("hardware", "hardware_stable_sha256", "hardware_stable"),
         "pnp_observation_sha256": ("pnp_observation_sha256", "pnp"),
-        "media_identity_sha256": ("media_identity_sha256", "media_identity"),
-        "media_state_sha256": ("media_state_sha256", "media_state"),
+        # New agents send the two unambiguous public hashes.  The two legacy
+        # columns are populated from software during the migration period.
+        "media_identity_sha256": ("software", "media_identity_sha256", "media_identity"),
+        "media_state_sha256": ("software", "media_state_sha256", "media_state"),
     }
     hashes = item.hashes or {}
     device = item.device or {}

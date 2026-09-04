@@ -16,6 +16,9 @@ install_dir=/opt/flashcontrol
 shared_dir=$install_dir/shared
 env_file=$shared_dir/flashcontrol.env
 backup_dir=$shared_dir/backups
+tls_dir=$shared_dir/certs
+tls_cert=$tls_dir/tls.crt
+tls_key=$tls_dir/tls.key
 network=flashcontrol
 db_container=flashcontrol-postgres
 app_container=flashcontrol-main
@@ -38,6 +41,8 @@ env_value() {
 
 [[ -d "$release_dir/FlashControlPIBServer" ]] || fail "release does not contain FlashControlPIBServer"
 [[ -f "$env_file" ]] || fail "missing $env_file (start from flashcontrol.env.example)"
+[[ -f "$tls_cert" ]] || fail "missing TLS certificate: $tls_cert"
+[[ -f "$tls_key" ]] || fail "missing TLS private key: $tls_key"
 
 postgres_db=$(env_value POSTGRES_DB)
 postgres_user=$(env_value POSTGRES_USER)
@@ -141,7 +146,10 @@ fi
   --restart unless-stopped \
   --network "$network" \
   -p 80:80 \
-  --health-cmd='wget -q -O /dev/null http://127.0.0.1/health/ready || exit 1' \
+  -p 443:443 \
+  --mount "type=bind,src=$tls_cert,dst=/etc/nginx/certs/tls.crt,readonly" \
+  --mount "type=bind,src=$tls_key,dst=/etc/nginx/certs/tls.key,readonly" \
+  --health-cmd='wget --no-check-certificate -q -O /dev/null https://127.0.0.1/health/ready || exit 1' \
   --health-interval=15s --health-timeout=3s --health-retries=4 \
   "$frontend_image" >/dev/null
 
@@ -161,7 +169,10 @@ if [[ "$web_healthy" != true ]]; then
     "${docker_cmd[@]}" rename "$previous_container" "$app_container"
     "${docker_cmd[@]}" start "$app_container" >/dev/null
     "${docker_cmd[@]}" run -d \
-      --name "$web_container" --restart unless-stopped --network "$network" -p 80:80 \
+      --name "$web_container" --restart unless-stopped --network "$network" \
+      -p 80:80 -p 443:443 \
+      --mount "type=bind,src=$tls_cert,dst=/etc/nginx/certs/tls.crt,readonly" \
+      --mount "type=bind,src=$tls_key,dst=/etc/nginx/certs/tls.key,readonly" \
       "$frontend_image" >/dev/null
   fi
   fail "Nginx health check failed; previous application container restored"

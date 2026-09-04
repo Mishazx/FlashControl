@@ -19,9 +19,9 @@ from logging.handlers import RotatingFileHandler
 from urllib.parse import urlparse
 
 try:
-    from heartbeat import persist_agent_id
+    from heartbeat import observations_url, persist_agent_id
 except ImportError:
-    from FlashControlAgent.heartbeat import persist_agent_id
+    from FlashControlAgent.heartbeat import observations_url, persist_agent_id
 
 
 SERVICE_NAME = "FlashControlAgent"
@@ -319,7 +319,10 @@ def install(args):
 
     bundled = bundled_agent_config()
     config = build_agent_config(args, os.path.abspath(args.install_dir), bundled)
-    validate_server_url(config.get("server_url"), min(int(args.request_timeout_seconds or 30), 10))
+    validate_server_url(
+        observations_url(config.get("server_url")),
+        min(int(args.request_timeout_seconds or 30), 10),
+    )
 
     install_dir = os.path.abspath(args.install_dir)
     stop_service_processes()

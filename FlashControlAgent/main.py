@@ -1305,7 +1305,7 @@ def volume_sort_key(volume):
     )
 
 
-def hardware_stable_evidence(record):
+def hardware_evidence(record):
     storage = record.get("storage") or {}
     geometry = record.get("geometry") or {}
     pnp = record.get("pnp") or {}
@@ -1420,20 +1420,29 @@ def media_state_evidence(record):
     }
 
 
-def hardware_stable_hash(record):
-    return canonical_sha256(hardware_stable_evidence(record))
+def software_evidence(record):
+    """Return the mutable, on-media configuration of a USB device.
+
+    This intentionally includes both the disk layout identifiers and the
+    user-visible filesystem metadata.  It is the counterpart to the hardware
+    fingerprint, not a second, ambiguously named media fingerprint.
+    """
+    return {
+        "layout": media_identity_evidence(record),
+        "filesystem": media_state_evidence(record),
+    }
+
+
+def hardware_hash(record):
+    return canonical_sha256(hardware_evidence(record))
 
 
 def pnp_observation_hash(record):
     return canonical_sha256(pnp_observation_evidence(record))
 
 
-def media_identity_hash(record):
-    return canonical_sha256(media_identity_evidence(record))
-
-
-def media_state_hash(record):
-    return canonical_sha256(media_state_evidence(record))
+def software_hash(record):
+    return canonical_sha256(software_evidence(record))
 
 
 def scan_physical_disks(max_disks=64):
@@ -1525,14 +1534,12 @@ def scan_physical_disks(max_disks=64):
                 },
             }
 
-            hardware_stable = hardware_stable_hash(record)
+            hardware = hardware_hash(record)
             pnp_observation = pnp_observation_hash(record)
-            media_identity = media_identity_hash(record)
-            media_state = media_state_hash(record)
-            record["hardware_stable_sha256"] = hardware_stable
+            software = software_hash(record)
+            record["hardware_sha256"] = hardware
+            record["software_sha256"] = software
             record["pnp_observation_sha256"] = pnp_observation
-            record["media_identity_sha256"] = media_identity
-            record["media_state_sha256"] = media_state
             devices.append(record)
 
         finally:
@@ -1616,9 +1623,8 @@ SESSION_PAYLOAD_KEYS = (
 )
 
 HASH_FIELDS = (
-    ("hardware_stable", "hardware_stable_sha256"),
-    ("media_identity", "media_identity_sha256"),
-    ("media_state", "media_state_sha256"),
+    ("hardware", "hardware_sha256"),
+    ("software", "software_sha256"),
 )
 
 DEBUG_HASH_FIELDS = HASH_FIELDS + (
@@ -1631,10 +1637,9 @@ HOST_PAYLOAD_KEYS = (
 )
 
 DEVICE_HASH_KEYS = (
-    "hardware_stable_sha256",
+    "hardware_sha256",
+    "software_sha256",
     "pnp_observation_sha256",
-    "media_identity_sha256",
-    "media_state_sha256",
 )
 
 

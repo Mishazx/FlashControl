@@ -22,6 +22,25 @@ sudo chmod 600 /opt/flashcontrol/shared/flashcontrol.env
 sudo editor /opt/flashcontrol/shared/flashcontrol.env
 ```
 
+The web container requires a PEM TLS certificate and its private key. For an
+internal pilot, create a self-signed pair once on `main-flash`:
+
+```bash
+sudo mkdir -p /opt/flashcontrol/shared/certs
+sudo openssl req -x509 -newkey rsa:4096 -sha256 -nodes -days 365 \
+  -keyout /opt/flashcontrol/shared/certs/tls.key \
+  -out /opt/flashcontrol/shared/certs/tls.crt \
+  -subj "/CN=main-flash"
+sudo chmod 600 /opt/flashcontrol/shared/certs/tls.key
+sudo chmod 644 /opt/flashcontrol/shared/certs/tls.crt
+```
+
+`push.ps1` uploads the deployment script; it then bind-mounts those two
+server-side files into `flashcontrol-web` and publishes HTTPS on port 443.
+Its web health check also uses HTTPS and accepts the self-signed certificate.
+Use a certificate issued for the server's DNS name instead when it is accessed
+outside the internal pilot.
+
 Production startup uses local web users and an mTLS identity map for machine
 auth. The TLS reverse proxy must validate client certificates, remove
 client-supplied `X-FlashControl-Client-*` headers, and inject the verified

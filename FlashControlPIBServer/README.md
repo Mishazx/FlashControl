@@ -8,8 +8,15 @@ decision with its evidence and confidence.
 
 ```powershell
 cd FlashControlPIBServer
+Copy-Item .env.example .env
+# Fill in .env with unique database credentials and certificate paths.
 docker compose up --build
 ```
+
+The production Compose file intentionally does not publish PostgreSQL to the
+host. Only the Nginx service is exposed, on HTTP (redirect only) and HTTPS.
+It requires PEM certificate/key paths through `FLASHCONTROL_TLS_CERT_PATH` and
+`FLASHCONTROL_TLS_KEY_PATH`.
 
 To recreate the local PostgreSQL volume after a schema reset:
 

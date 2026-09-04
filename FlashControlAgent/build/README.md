@@ -4,10 +4,14 @@
 
 ```powershell
 cd FlashControlAgent
-.\build\package.ps1 -ServerUrl "https://collector.example.local/api/v1/observations"
+.\build\package.ps1 -ServerUrl "https://collector.example.local"
 ```
 
-This bakes the collector URL into `agent_config.json` (and into the installer). After that, install is just:
+This bakes the collector address into `agent_config.json` (and into the
+installer). Pass either a domain/IP root such as
+`https://collector.example.local` or `https://192.168.10.15`; the agent adds
+`/api/v1/observations` itself. The full endpoint is also supported for backward
+compatibility. After that, install is just:
 
 ```powershell
 .\FlashControlAgentInstaller.exe install
@@ -32,7 +36,7 @@ Run the installer **as Administrator**. If the package was built with `-ServerUr
 Optional overrides for a one-off machine:
 
 ```powershell
-.\FlashControlAgentInstaller.exe install --server-url "https://collector.example.local/api/v1/observations"
+.\FlashControlAgentInstaller.exe install --server-url "https://collector.example.local"
 ```
 
 `--machine-token` is only for a shared development token; the normal path is enroll. Production mTLS still uses `--client-cert-file`.
@@ -94,4 +98,5 @@ delivered or an administrator raises the configured limit.
 
 Package the contents of `dist` and run `FlashControlAgentInstaller.exe install`
 on target machines. Build a separate package per site with that site's
-`-ServerUrl`.
+domain or IP in `-ServerUrl`. For `https://` over an IP address, the server TLS
+certificate must contain that IP address in its Subject Alternative Name (SAN).

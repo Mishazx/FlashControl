@@ -21,6 +21,7 @@ from heartbeat import (
     enroll_url,
     forget_secret,
     heartbeat_url,
+    observations_url,
     host_from_observation,
     load_or_create_agent_id,
     persist_agent_id,
@@ -29,6 +30,20 @@ from heartbeat import (
 
 
 class HeartbeatTests(unittest.TestCase):
+    def test_observations_url_accepts_collector_root(self):
+        self.assertEqual(
+            observations_url("https://192.168.10.15"),
+            "https://192.168.10.15/api/v1/observations",
+        )
+        self.assertEqual(
+            observations_url("https://collector.example.local:8443/"),
+            "https://collector.example.local:8443/api/v1/observations",
+        )
+
+    def test_observations_url_preserves_explicit_endpoint(self):
+        url = "https://collector.example.local/api/v1/observations"
+        self.assertEqual(observations_url(url), url)
+
     def setUp(self):
         self.folder = tempfile.mkdtemp(prefix="flashcontrol-agent-id-")
 

@@ -2,16 +2,14 @@ services:
   postgres:
     image: postgres:17
     environment:
-      POSTGRES_DB: flashcontrol
-      POSTGRES_USER: flashcontrol
-      POSTGRES_PASSWORD: flashcontrol
-    ports:
-      - "5432:5432"
+      POSTGRES_DB: ${FLASHCONTROL_POSTGRES_DB:-flashcontrol}
+      POSTGRES_USER: ${FLASHCONTROL_POSTGRES_USER:-flashcontrol}
+      POSTGRES_PASSWORD: ${FLASHCONTROL_POSTGRES_PASSWORD:?Set FLASHCONTROL_POSTGRES_PASSWORD to a unique random secret}
     volumes:
       - flashcontrol_pgdata:/var/lib/postgresql/data
       - ./migrations/001_initial.sql:/docker-entrypoint-initdb.d/001_initial.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U flashcontrol -d flashcontrol"]
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -20,7 +18,7 @@ services:
     build: .
     environment:
       FLASHCONTROL_ENVIRONMENT: production
-      FLASHCONTROL_DATABASE_URL: postgresql+psycopg://flashcontrol:flashcontrol@postgres:5432/flashcontrol
+      FLASHCONTROL_DATABASE_URL: ${FLASHCONTROL_DATABASE_URL:?Set FLASHCONTROL_DATABASE_URL with the production database credential}
       FLASHCONTROL_MACHINE_AUTH_MODE: mtls
       FLASHCONTROL_TRUSTED_PROXIES: ${FLASHCONTROL_TRUSTED_PROXIES:-}
       FLASHCONTROL_TRUSTED_MTLS_PROXIES: ${FLASHCONTROL_TRUSTED_MTLS_PROXIES:-}
@@ -48,6 +46,10 @@ services:
       dockerfile: Dockerfile.frontend
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      - ${FLASHCONTROL_TLS_CERT_PATH:?Set FLASHCONTROL_TLS_CERT_PATH to the PEM certificate file}:/etc/nginx/certs/tls.crt:ro
+      - ${FLASHCONTROL_TLS_KEY_PATH:?Set FLASHCONTROL_TLS_KEY_PATH to the PEM private-key file}:/etc/nginx/certs/tls.key:ro
     depends_on:
       - api
 

@@ -24,10 +24,17 @@ class ProxyApiTests(unittest.TestCase):
         cls.context = TestClient(app, client=("127.0.0.1", 50000))
         cls.client = cls.context.__enter__()
         cls.agent_id = uuid.uuid4()
+        enrolled = cls.client.post(
+            "/api/v1/agents/enroll",
+            json={"agent_id": str(cls.agent_id), "hostname": "test-agent"},
+            headers={"X-FlashControl-Enroll-Token": "agent-secret"},
+        )
+        if enrolled.status_code != 200:
+            raise RuntimeError(enrolled.text)
         cls.headers = {
             "X-FlashControl-Machine-ID": str(cls.agent_id),
             "X-FlashControl-Machine-Kind": "agent",
-            "X-FlashControl-Machine-Token": "agent-secret",
+            "X-FlashControl-Machine-Token": enrolled.json()["machine_token"],
         }
 
     @classmethod
@@ -98,6 +105,7 @@ class ProxyApiTests(unittest.TestCase):
                 "hostname": "proxy-pc",
                 "current_ips": ["127.0.0.1"],
             },
+            headers={"X-FlashControl-Enroll-Token": "agent-secret"},
         )
         self.assertEqual(enrolled.status_code, 200)
         headers = {
@@ -108,6 +116,13 @@ class ProxyApiTests(unittest.TestCase):
         payload = {"event_id": str(uuid.uuid4()), "schema_version": 1}
         response = self.client.post("/api/v1/observations", json=payload, headers=headers)
         self.assertEqual(response.status_code, 202)
+
+    def test_enrollment_requires_bootstrap_token(self):
+        response = self.client.post(
+            "/api/v1/agents/enroll",
+            json={"agent_id": str(uuid.uuid4()), "hostname": "untrusted-agent"},
+        )
+        self.assertEqual(response.status_code, 401)
 
 
 class ProxyForwardingTests(unittest.IsolatedAsyncioTestCase):

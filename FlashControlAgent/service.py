@@ -26,6 +26,7 @@ from heartbeat import (
     enroll_url,
     heartbeat_url,
     load_or_create_agent_id,
+    observations_url,
     forget_secret,
     persist_secret,
 )
@@ -210,7 +211,9 @@ def capture_collector_json(collector_args):
 def device_key(observation):
     """Stable key used only for the local disconnect cache."""
     hashes = observation.get("hashes") or {}
-    value = hashes.get("hardware_stable")
+    # New observations use the concise public name.  Accept the former name
+    # while an installed service may still read queued older observations.
+    value = hashes.get("hardware") or hashes.get("hardware_stable")
     if value:
         return "hardware:" + str(value)
     device = observation.get("device") or {}
@@ -505,7 +508,8 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
                         device_notification_scan = False
                     next_collection_at = time.time() + interval_seconds
 
-                server_url = (self.config.get("server_url") or "").strip()
+                configured_server_url = (self.config.get("server_url") or "").strip()
+                server_url = observations_url(configured_server_url)
                 machine_token = current_machine_token(self.config)
                 credentials_ready = delivery_credentials_configured(self.config)
                 target_enroll_url = enroll_url(

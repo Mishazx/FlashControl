@@ -24,6 +24,7 @@ ALLOWED_NETWORKS = tuple(
     if item.strip()
 )
 AGENT_TOKEN = os.environ.get("FLASHCONTROL_PROXY_AGENT_TOKEN", "")
+ENROLL_TOKEN = os.environ.get("FLASHCONTROL_PROXY_ENROLL_TOKEN", AGENT_TOKEN)
 AUTH_MODE = os.environ.get("FLASHCONTROL_PROXY_AUTH_MODE", "token").lower()
 TRUSTED_MTLS_PROXIES = tuple(
     ipaddress.ip_network(item.strip())
@@ -63,10 +64,6 @@ def require_agent(
         raise HTTPException(status_code=401, detail="invalid agent credentials")
     if AUTH_MODE == "token":
         if queue.agent_token_matches(machine_id, _hash_token(machine_token)):
-            return machine_id
-        if AGENT_TOKEN and hmac.compare_digest(
-            _hash_token(machine_token), _hash_token(AGENT_TOKEN)
-        ):
             return machine_id
         raise HTTPException(status_code=401, detail="invalid agent credentials")
     if AUTH_MODE != "mtls" or not any(source in network for network in TRUSTED_MTLS_PROXIES):
@@ -145,6 +142,14 @@ def enroll(request: Request, payload: dict = Body(...)):
         raise HTTPException(status_code=403, detail="invalid source address") from exc
     if not any(source in network for network in ALLOWED_NETWORKS):
         raise HTTPException(status_code=403, detail="source network is not allowed")
+    # Enrollment is a privileged operation: network location alone does not
+    # prove that a caller is an approved agent.  The bootstrap token is used
+    # only here; it never authenticates telemetry after enrollment.
+    supplied_token = request.headers.get("X-FlashControl-Enroll-Token", "")
+    if AUTH_MODE != "token" or not ENROLL_TOKEN or not hmac.compare_digest(
+        _hash_token(supplied_token), _hash_token(ENROLL_TOKEN)
+    ):
+        raise HTTPException(status_code=401, detail="invalid enrollment credentials")
     try:
         agent_id = uuid.UUID(str(payload.get("agent_id") or ""))
     except ValueError as exc:
