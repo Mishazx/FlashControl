@@ -8,6 +8,7 @@ const titles = {
   events: ["ЖУРНАЛ АУДИТА", "События"],
   alerts: ["IDENTITY ENGINE", "Предупреждения"],
   audit: ["БЕЗОПАСНОСТЬ", "Журнал действий"],
+  users: ["АДМИНИСТРИРОВАНИЕ", "Пользователи"],
 };
 const state = { page: "dashboard", offset: 0, limit: 25, filters: {} };
 let currentUser = null;
@@ -111,6 +112,10 @@ function canManageCleanup() {
   return ["admin", "security"].includes(currentUser?.role);
 }
 
+function canDeleteInventory() {
+  return currentUser?.role === "admin";
+}
+
 async function apiRequest(path, { method = "GET", params = {}, body, headers = {} } = {}) {
   const url = new URL(API + path, window.location.origin);
   Object.entries(params).forEach(([key, value]) => {
@@ -146,6 +151,30 @@ async function destructiveAction(path, message) {
   if (!window.confirm(message)) return false;
   await apiRequest(path, { method: "DELETE" });
   return true;
+}
+
+function clearDrawerDelete() {
+  const button = document.getElementById("drawer-delete");
+  button.hidden = true;
+  button.onclick = null;
+}
+
+function bindDrawerDelete(enabled, path, message) {
+  const button = document.getElementById("drawer-delete");
+  if (!enabled) {
+    clearDrawerDelete();
+    return;
+  }
+  button.hidden = false;
+  button.onclick = async () => {
+    try {
+      if (!await destructiveAction(path, message)) return;
+      closeDrawer();
+      await render();
+    } catch (error) {
+      showError(error);
+    }
+  };
 }
 
 function loading() {
@@ -190,14 +219,19 @@ function panelTable(headers, rows, emptyText = "Данных пока нет") {
 function pagination(data) {
   const start = data.total ? data.offset + 1 : 0;
   const end = Math.min(data.offset + data.items.length, data.total);
-  return `<div class="pagination"><span>${start}–${end} из ${data.total}</span><div><button class="button ghost" data-page-offset="${Math.max(0, data.offset - data.limit)}" ${data.offset === 0 ? "disabled" : ""}>Назад</button> <button class="button ghost" data-page-offset="${data.offset + data.limit}" ${end >= data.total ? "disabled" : ""}>Далее</button></div></div>`;
+  return `<div class="pagination"><span>${start}–${end} из ${data.total}</span><div><button type="button" class="button ghost" data-page-offset="${Math.max(0, data.offset - data.limit)}" ${data.offset === 0 ? "disabled" : ""}>Назад</button> <button type="button" class="button ghost" data-page-offset="${data.offset + data.limit}" ${end >= data.total ? "disabled" : ""}>Далее</button></div></div>`;
 }
 
 function bindPagination() {
-  document.querySelectorAll("[data-page-offset]").forEach(button => button.addEventListener("click", () => {
+  if (content.dataset.paginationBound === "1") return;
+  content.dataset.paginationBound = "1";
+  content.addEventListener("click", event => {
+    const button = event.target.closest("[data-page-offset]");
+    if (!button || button.disabled || !content.contains(button)) return;
+    event.preventDefault();
     state.offset = Number(button.dataset.pageOffset);
     render();
-  }));
+  });
 }
 
 async function renderDashboard() {
@@ -265,6 +299,57 @@ async function renderAudit() {
   bindPagination();
 }
 
+function roleLabel(role) {
+  return ({ admin: "Администратор", security: "Безопасность", auditor: "Аудитор" })[role] || role;
+}
+
+async function renderUsers() {
+  const data = await api("/users", { q: state.filters.q });
+  const rows = data.items.map(user => `<tr class="clickable" data-user="${esc(user.id)}"><td><span class="primary">${esc(user.username)}</span><span class="secondary">${user.is_local ? "Локальная учётная запись" : "Учётная запись LDAP"}</span></td><td><span class="badge info">${esc(roleLabel(user.role))}</span></td><td><span class="badge ${user.enabled ? "same" : "alert"}">${user.enabled ? "Активен" : "Отключён"}</span></td><td>${user.active_sessions || "—"}</td><td>${formatDate(user.last_login_at_utc)}</td><td>${formatDate(user.created_at_utc)}</td></tr>`).join("");
+  content.innerHTML = `<div class="toolbar"><input class="field search" id="user-search" placeholder="Поиск по логину" value="${esc(state.filters.q || "")}"><button class="button" id="user-filter">Найти</button><button class="button push-right" id="new-user">Добавить пользователя</button></div>${panelTable(["Пользователь", "Роль", "Статус", "Сессии", "Последний вход", "Создан"], rows, "Пользователи не найдены")}`;
+  document.getElementById("user-filter").onclick = () => { state.filters = { q: document.getElementById("user-search").value.trim() }; render(); };
+  document.getElementById("user-search").onkeydown = event => { if (event.key === "Enter") document.getElementById("user-filter").click(); };
+  document.getElementById("new-user").onclick = openCreateUser;
+  document.querySelectorAll("[data-user]").forEach(row => row.onclick = () => openUser(row.dataset.user, data.items.find(user => String(user.id) === row.dataset.user)));
+}
+
+function userFormOptions(selected) {
+  return ["admin", "security", "auditor"].map(role => `<option value="${role}" ${role === selected ? "selected" : ""}>${esc(roleLabel(role))}</option>`).join("");
+}
+
+function openCreateUser() {
+  openDrawer("ПОЛЬЗОВАТЕЛИ", "Новый пользователь", `<form class="user-form" id="user-create-form"><label>Логин<input class="field" name="username" required maxlength="128" autocomplete="username"></label><label>Роль<select class="field" name="role">${userFormOptions("auditor")}</select></label><label class="wide">Пароль<input class="field" name="password" type="password" required minlength="12" autocomplete="new-password"><small>Не менее 12 символов</small></label><div class="drawer-actions wide"><button class="button" type="submit">Создать пользователя</button></div></form>`);
+  document.getElementById("user-create-form").onsubmit = async event => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    try {
+      await apiRequest("/users", { method: "POST", body: Object.fromEntries(form) });
+      closeDrawer(); await render();
+    } catch (error) { showDrawerError(error); }
+  };
+}
+
+function showDrawerError(error) {
+  const box = document.getElementById("user-form-error");
+  if (box) box.textContent = error.message;
+  else showError(error);
+}
+
+function openUser(id, user) {
+  if (!user) return;
+  openDrawer("ПОЛЬЗОВАТЕЛИ", user.username, `<form class="user-form" id="user-update-form"><p class="form-error" id="user-form-error"></p><label>Роль<select class="field" name="role">${userFormOptions(user.role)}</select></label><label>Статус<select class="field" name="enabled"><option value="true" ${user.enabled ? "selected" : ""}>Активен</option><option value="false" ${!user.enabled ? "selected" : ""}>Отключён</option></select></label>${user.is_local ? '<label class="wide">Новый пароль <span class="optional">(необязательно)</span><input class="field" name="password" type="password" minlength="12" autocomplete="new-password"><small>После смены пароля все сессии пользователя будут завершены.</small></label>' : '<div class="form-note wide">Роль учётной записи LDAP обновляется при следующем входе согласно настройкам Active Directory.</div>'}<div class="drawer-actions wide"><button class="button" type="submit">Сохранить изменения</button></div></form>`);
+  document.getElementById("user-update-form").onsubmit = async event => {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    const body = { role: form.get("role"), enabled: form.get("enabled") === "true" };
+    if (form.get("password")) body.password = form.get("password");
+    try {
+      await apiRequest(`/users/${id}`, { method: "PATCH", body });
+      closeDrawer(); await render();
+    } catch (error) { showDrawerError(error); }
+  };
+}
+
 function detailItem(label, value, wide = false, mono = false, title = "") {
   return `<div class="detail-item ${wide ? "wide" : ""}"><label${hintAttr(title)}>${esc(label)}</label><div class="${mono ? "mono" : ""}">${esc(value)}</div></div>`;
 }
@@ -276,21 +361,13 @@ async function openDevice(id) {
     const title = [item.vendor, item.product].filter(Boolean).join(" ") || "Неизвестное устройство";
     const media = (item.media_states || []).map(x => `<div class="detail-item wide"><label>MEDIA STATE · ${formatDate(x.last_seen_at)}</label><div class="mono">identity ${esc(x.media_identity_sha256)}<br>state ${esc(x.media_state_sha256)}</div></div>`).join("");
     const computers = (item.used_on_computers || []).map(x => `<span class="badge info">${esc(x.hostname)}</span>`).join(" ") || "—";
-    const actions = canManageCleanup() ? '<div class="drawer-actions"><button class="button danger" id="delete-device">Удалить устройство</button></div>' : "";
     document.getElementById("drawer-title").textContent = title;
-    document.getElementById("drawer-body").innerHTML = `${actions}<div class="detail-grid">${detailItem("Physical Device ID", item.id, true, true)}${detailItem("Статус", translate(item.status, deviceStatusLabels))}${detailItem("Confidence", translate(item.identity_confidence, confidenceLabels), false, false, identityConfidenceHints[item.identity_confidence] || confidenceColumnHint)}${detailItem("VID:PID", item.vid || item.pid ? `${item.vid}:${item.pid}` : "—")}${detailItem("Storage serial", item.storage_serial, false, true)}${detailItem("Hardware hash", item.hardware_stable_sha256, true, true)}<div class="detail-item wide"><label>Использовалась на ПК</label><div>${computers}</div></div>${detailItem("SID пользователей", (item.seen_user_sids || []).join(", "), true, true)}</div><h3 class="section-title">MEDIA STATES (${item.media_states.length})</h3><div class="detail-grid">${media || '<div class="empty">Нет данных</div>'}</div><h3 class="section-title">ИСХОДНЫЕ ПРИЗНАКИ</h3><pre class="json">${esc(JSON.stringify(item.representative_device, null, 2))}</pre>`;
-    const deleteButton = document.getElementById("delete-device");
-    if (deleteButton) {
-      deleteButton.onclick = async () => {
-        try {
-          if (!await destructiveAction(`/devices/${id}`, "Удалить USB-устройство и все связанные с ним события?")) return;
-          closeDrawer();
-          await render();
-        } catch (error) {
-          showError(error);
-        }
-      };
-    }
+    document.getElementById("drawer-body").innerHTML = `<div class="detail-grid">${detailItem("Physical Device ID", item.id, true, true)}${detailItem("Статус", translate(item.status, deviceStatusLabels))}${detailItem("Confidence", translate(item.identity_confidence, confidenceLabels), false, false, identityConfidenceHints[item.identity_confidence] || confidenceColumnHint)}${detailItem("VID:PID", item.vid || item.pid ? `${item.vid}:${item.pid}` : "—")}${detailItem("Storage serial", item.storage_serial, false, true)}${detailItem("Hardware hash", item.hardware_stable_sha256, true, true)}<div class="detail-item wide"><label>Использовалась на ПК</label><div>${computers}</div></div>${detailItem("SID пользователей", (item.seen_user_sids || []).join(", "), true, true)}</div><h3 class="section-title">MEDIA STATES (${item.media_states.length})</h3><div class="detail-grid">${media || '<div class="empty">Нет данных</div>'}</div><h3 class="section-title">ИСХОДНЫЕ ПРИЗНАКИ</h3><pre class="json">${esc(JSON.stringify(item.representative_device, null, 2))}</pre>`;
+    bindDrawerDelete(
+      canDeleteInventory(),
+      `/devices/${id}`,
+      "Удалить USB-устройство и все связанные с ним события?",
+    );
   } catch (error) { document.getElementById("drawer-body").innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
 }
 
@@ -302,6 +379,11 @@ async function openComputer(id) {
     const agent = item.agent;
     const agentDetails = agent ? `${detailItem("Статус агента", translate(agent.status, agentStatusLabels))}${detailItem("Версия агента", agent.agent_version)}${detailItem("Agent ID", agent.id, true, true)}${detailItem("Размер очереди", agent.queue_size)}${detailItem("Маршрут", translate(agent.selected_route, routeLabels))}${detailItem("Текущие IP", (agent.current_ips || []).join(", "), true, true)}${detailItem("Последний heartbeat", formatDate(agent.last_seen_at_utc))}` : detailItem("Агент", "Не зарегистрирован", true);
     document.getElementById("drawer-body").innerHTML = `<div class="detail-grid">${detailItem("Computer ID", item.id, true, true)}${detailItem("Домен", item.domain)}${detailItem("Последнее наблюдение", formatDate(item.last_seen_at))}${agentDetails}</div><h3 class="section-title">ПОСЛЕДНИЕ СОБЫТИЯ</h3>${panelTable(["Время", "Тип", "Решение"], item.recent_observations.map(x => `<tr class="clickable" data-event="${esc(x.event_id)}"><td>${formatDate(x.observed_at_utc)}</td><td>${esc(translate(x.event_type, eventTypeLabels))}</td><td>${badge(x.identity_decision?.result)}</td></tr>`).join(""))}<h3 class="section-title">HOST DATA</h3><pre class="json">${esc(JSON.stringify(item.last_host, null, 2))}</pre>`;
+    bindDrawerDelete(
+      canDeleteInventory(),
+      `/computers/${id}`,
+      "Удалить компьютер и все связанные с ним события?",
+    );
     bindRows();
   } catch (error) { document.getElementById("drawer-body").innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
 }
@@ -312,31 +394,27 @@ async function openEvent(id) {
     const item = await api(`/observations/${id}`);
     document.getElementById("drawer-title").textContent = item.hostname || "Observation";
     const decision = item.identity_decision || {};
-    const actions = canManageCleanup() ? '<div class="drawer-actions"><button class="button danger" id="delete-event">Удалить событие</button></div>' : "";
-    document.getElementById("drawer-body").innerHTML = `${actions}<div class="detail-grid">${detailItem("Event ID", item.event_id, true, true)}${detailItem("Время", formatDate(item.observed_at_utc))}${detailItem("Тип", translate(item.event_type, eventTypeLabels))}${detailItem("Решение", translate(decision.result, identityResultLabels))}${detailItem("Confidence", decision.confidence != null ? `${Math.round(decision.confidence * 100)}%` : "—", false, false, decisionConfidenceHints[decision.result] || confidenceColumnHint)}${detailItem("Physical Device ID", item.physical_device_id, true, true)}${detailItem("Основания", (decision.reasons || []).join(", "), true)}</div><h3 class="section-title">RAW OBSERVATION</h3><pre class="json">${esc(JSON.stringify(item.raw_observation, null, 2))}</pre>`;
-    const deleteButton = document.getElementById("delete-event");
-    if (deleteButton) {
-      deleteButton.onclick = async () => {
-        try {
-          if (!await destructiveAction(`/observations/${id}`, "Удалить событие наблюдения?")) return;
-          closeDrawer();
-          await render();
-        } catch (error) {
-          showError(error);
-        }
-      };
-    }
+    document.getElementById("drawer-body").innerHTML = `<div class="detail-grid">${detailItem("Event ID", item.event_id, true, true)}${detailItem("Время", formatDate(item.observed_at_utc))}${detailItem("Тип", translate(item.event_type, eventTypeLabels))}${detailItem("Решение", translate(decision.result, identityResultLabels))}${detailItem("Confidence", decision.confidence != null ? `${Math.round(decision.confidence * 100)}%` : "—", false, false, decisionConfidenceHints[decision.result] || confidenceColumnHint)}${detailItem("Physical Device ID", item.physical_device_id, true, true)}${detailItem("Основания", (decision.reasons || []).join(", "), true)}</div><h3 class="section-title">RAW OBSERVATION</h3><pre class="json">${esc(JSON.stringify(item.raw_observation, null, 2))}</pre>`;
+    bindDrawerDelete(
+      canManageCleanup(),
+      `/observations/${id}`,
+      "Удалить событие наблюдения?",
+    );
   } catch (error) { document.getElementById("drawer-body").innerHTML = `<div class="empty">${esc(error.message)}</div>`; }
 }
 
 function openDrawer(eyebrow, title, body) {
+  clearDrawerDelete();
   document.getElementById("drawer-eyebrow").textContent = eyebrow;
   document.getElementById("drawer-title").textContent = title;
   document.getElementById("drawer-body").innerHTML = body;
   drawer.classList.add("open"); drawer.setAttribute("aria-hidden", "false"); backdrop.hidden = false;
 }
 
-function closeDrawer() { drawer.classList.remove("open"); drawer.setAttribute("aria-hidden", "true"); backdrop.hidden = true; }
+function closeDrawer() {
+  clearDrawerDelete();
+  drawer.classList.remove("open"); drawer.setAttribute("aria-hidden", "true"); backdrop.hidden = true;
+}
 
 function bindRows() {
   document.querySelectorAll("[data-device]").forEach(row => row.onclick = () => openDevice(row.dataset.device));
@@ -356,12 +434,13 @@ async function render() {
     if (state.page === "events") await renderEvents();
     if (state.page === "alerts") await renderAlerts();
     if (state.page === "audit") await renderAudit();
+    if (state.page === "users") await renderUsers();
   } catch (error) { showError(error); }
 }
 
 function route() {
   const requested = location.hash.replace("#", "") || "dashboard";
-  const roleAllowed = requested !== "audit" || ["admin", "security"].includes(currentUser?.role);
+  const roleAllowed = (requested !== "audit" || ["admin", "security"].includes(currentUser?.role)) && (requested !== "users" || currentUser?.role === "admin");
   state.page = titles[requested] && roleAllowed ? requested : "dashboard";
   state.offset = 0; state.filters = {};
   document.getElementById("sidebar").classList.remove("open");

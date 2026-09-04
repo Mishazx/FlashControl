@@ -51,6 +51,15 @@ def persist_secret(path, value):
     return text
 
 
+def forget_secret(path):
+    """Remove an issued credential so the next service cycle can re-enroll."""
+    try:
+        os.remove(path)
+        return True
+    except OSError:
+        return False
+
+
 def load_secret(path):
     try:
         with open(path, "r") as handle:
@@ -153,7 +162,13 @@ def build_heartbeat(agent_id, agent_version, queue_size, host=None,
                 if value and value not in current_ips:
                     current_ips.append(value)
     hostname = host.get("hostname") or os.environ.get("COMPUTERNAME") or "unknown"
-    domain = host.get("domain_name") or host.get("domain") or os.environ.get("USERDOMAIN")
+    # A populated host snapshot is authoritative.  On a workgroup machine it
+    # intentionally has no domain; falling back to USERDOMAIN here turns the
+    # workgroup name into a fictitious AD domain and prevents its heartbeat
+    # from matching the computer created by observations.
+    domain = host.get("domain_name") or host.get("domain")
+    if domain is None and not host:
+        domain = os.environ.get("USERDOMAIN")
     # Workgroup machines often expose COMPUTERNAME as USERDOMAIN.  It is not
     # an AD domain and must match the Observation's null domain.
     if domain and str(domain).strip().lower() == str(hostname).strip().lower():

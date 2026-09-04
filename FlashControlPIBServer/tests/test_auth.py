@@ -3,6 +3,9 @@ import subprocess
 import sys
 import unittest
 
+os.environ.setdefault("FLASHCONTROL_ENVIRONMENT", "test")
+os.environ.setdefault("FLASHCONTROL_DEV_MACHINE_TOKEN", "test-machine-token")
+
 
 class PasswordHashTests(unittest.TestCase):
     def test_scrypt_hash_is_salted_and_verifies(self):
@@ -98,6 +101,101 @@ class ProductionConfigurationTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("LDAP requires at least one group mapping", result.stderr)
+
+
+class LdapMappingTests(unittest.TestCase):
+    def test_sam_account_name_strips_domain_and_upn(self):
+        from app.ldap_auth import sam_account_name
+
+        self.assertEqual(sam_account_name(r"MOSMETRO\Ivan"), "Ivan")
+        self.assertEqual(sam_account_name("ivan@mosmetro.ru"), "ivan")
+        self.assertEqual(sam_account_name("ivan"), "ivan")
+
+    def test_role_prefers_admin_group_from_memberof_cn(self):
+        from unittest.mock import patch
+
+        from app import config
+        from app.ldap_auth import role_from_member_of
+
+        with patch.object(config, "LDAP_ADMIN_GROUPS", frozenset({"flashcontrol-admins"})), \
+            patch.object(config, "LDAP_SECURITY_GROUPS", frozenset({"flashcontrol-security"})), \
+            patch.object(config, "LDAP_AUDITOR_GROUPS", frozenset()), \
+            patch.object(config, "LDAP_DEFAULT_ROLE", ""), \
+            patch.object(config, "LDAP_GROUP_PARENT_DN", ""):
+            self.assertEqual(
+                role_from_member_of([
+                    "CN=FlashControl-Security,OU=Groups,DC=example,DC=local",
+                    "CN=FlashControl-Admins,OU=Groups,DC=example,DC=local",
+                ]),
+                "admin",
+            )
+
+    def test_role_matches_cn_with_parent_dn(self):
+        from unittest.mock import patch
+
+        from app import config
+        from app.ldap_auth import role_from_member_of
+
+        with patch.object(config, "LDAP_ADMIN_GROUPS", frozenset()), \
+            patch.object(config, "LDAP_SECURITY_GROUPS", frozenset()), \
+            patch.object(config, "LDAP_AUDITOR_GROUPS", frozenset({"flashcontrol-auditors"})), \
+            patch.object(config, "LDAP_DEFAULT_ROLE", ""), \
+            patch.object(config, "LDAP_GROUP_PARENT_DN", "OU=Groups,DC=example,DC=local"):
+            self.assertEqual(
+                role_from_member_of([
+                    "CN=FlashControl-Auditors,OU=Groups,DC=example,DC=local",
+                ]),
+                "auditor",
+            )
+
+    def test_access_group_gate_uses_cn(self):
+        from unittest.mock import patch
+
+        from app import config
+        from app.ldap_auth import has_access_group
+
+        with patch.object(config, "LDAP_ACCESS_GROUP", "БПИБ"), \
+            patch.object(config, "LDAP_GROUP_PARENT_DN", "OU=Access,DC=example,DC=local"):
+            self.assertTrue(has_access_group([
+                "CN=БПИБ,OU=Access,DC=example,DC=local",
+            ]))
+            self.assertFalse(has_access_group([
+                "CN=Other,OU=Access,DC=example,DC=local",
+            ]))
+
+    def test_login_maps_groups_after_bind(self):
+        from unittest.mock import patch
+
+        from app import config
+        from app.ldap_auth import perform_ldap_login
+
+        with patch("app.ldap_auth.ldap_configured", return_value=True), \
+            patch(
+                "app.ldap_auth._bind_and_read",
+                return_value=(["CN=FlashControl-Admins,OU=Groups,DC=example,DC=local"], "Ivan Petrov"),
+            ), \
+            patch.object(config, "LDAP_ACCESS_GROUP", ""), \
+            patch.object(config, "LDAP_ADMIN_GROUPS", frozenset({"flashcontrol-admins"})), \
+            patch.object(config, "LDAP_SECURITY_GROUPS", frozenset()), \
+            patch.object(config, "LDAP_AUDITOR_GROUPS", frozenset()), \
+            patch.object(config, "LDAP_DEFAULT_ROLE", ""), \
+            patch.object(config, "LDAP_GROUP_PARENT_DN", ""):
+            result = perform_ldap_login(r"EXAMPLE\Ivan", "secret")
+        self.assertTrue(result.success)
+        self.assertEqual(result.username, "Ivan")
+        self.assertEqual(result.role, "admin")
+        self.assertEqual(result.display_name, "Ivan Petrov")
+
+    def test_bind_failure_is_returned(self):
+        from unittest.mock import patch
+
+        from app.ldap_auth import LdapFailure, perform_ldap_login
+
+        with patch("app.ldap_auth.ldap_configured", return_value=True), \
+            patch("app.ldap_auth._bind_and_read", side_effect=LdapFailure("invalid_credentials")):
+            result = perform_ldap_login("ivan", "wrong")
+        self.assertFalse(result.success)
+        self.assertEqual(result.failure, "invalid_credentials")
 
 
 if __name__ == "__main__":

@@ -46,7 +46,7 @@ export function LoginPage() {
         <div className="login-copy">
           <p className="eyebrow">DIRECTORY AUTHENTICATION</p>
           <h1>Вход в систему аудита</h1>
-          <p>Войдите доменной учёткой Active Directory. В разработке также принимается локальная учётка.</p>
+          <p>Войдите доменной учёткой Active Directory.</p>
         </div>
         <form onSubmit={handleSubmit}>
           <label>
@@ -60,7 +60,6 @@ export function LoginPage() {
           {error && <p className="login-error" role="alert">{error}</p>}
           <button className="button login-submit" type="submit" disabled={loading}>Войти</button>
         </form>
-        <p className="login-note">В production вход идёт через Active Directory: доменный логин, проверка группы доступа и роль из групп AD.</p>
       </main>
     </div>
   );

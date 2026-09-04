@@ -19,7 +19,12 @@ form.addEventListener("submit", async event => {
     });
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
-      throw new Error(response.status === 429 ? "Слишком много попыток. Повторите позднее." : (payload.detail || "Неверное имя пользователя или пароль"));
+      const messages = {
+        403: "Нет доступа: учётка не в нужной группе Active Directory.",
+        429: "Слишком много попыток. Повторите позднее.",
+        503: "Каталог Active Directory недоступен.",
+      };
+      throw new Error(messages[response.status] || payload.detail || "Неверное имя пользователя или пароль");
     }
     window.location.replace("/");
   } catch (error) {

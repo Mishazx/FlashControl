@@ -6,6 +6,13 @@
     <meta name="color-scheme" content="dark light" />
     <title>FlashControl — аудит USB</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script>
+      (function(){
+        var s = localStorage.getItem('fc-theme');
+        var light = s === 'light' || (s !== 'dark' && window.matchMedia('(prefers-color-scheme: light)').matches);
+        if (light) document.documentElement.classList.add('light');
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -27,8 +27,7 @@ export async function apiRequest<T = unknown>(
   }
   const response = await fetch(url, options);
   if (response.status === 401) {
-    window.location.assign('/login');
-    throw new Error('Требуется вход');
+    throw new Error('401');
   }
   if (!response.ok) {
     let detail = `HTTP ${response.status}`;

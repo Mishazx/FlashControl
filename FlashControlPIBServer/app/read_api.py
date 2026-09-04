@@ -179,7 +179,7 @@ def list_agents(
 ) -> dict:
     statement = select(Agent).order_by(desc(Agent.last_seen_at_utc), Agent.hostname)
     if hostname:
-        statement = statement.where(Agent.hostname.ilike("%%%s%%" % hostname.strip()))
+        statement = statement.where(Agent.hostname.ilike(f"%{hostname.strip()}%"))
     cutoff = datetime.datetime.now(datetime.timezone.utc) - AGENT_ONLINE_WINDOW
     if status == "online":
         statement = statement.where(Agent.last_seen_at_utc >= cutoff)
@@ -207,9 +207,9 @@ def list_computers(
 ) -> dict:
     statement = select(Computer).order_by(desc(Computer.last_seen_at), Computer.hostname)
     if hostname:
-        statement = statement.where(Computer.hostname.ilike("%%%s%%" % hostname.strip()))
+        statement = statement.where(Computer.hostname.ilike(f"%{hostname.strip()}%"))
     if domain:
-        statement = statement.where(Computer.domain.ilike("%%%s%%" % domain.strip()))
+        statement = statement.where(Computer.domain.ilike(f"%{domain.strip()}%"))
     cutoff = datetime.datetime.now(datetime.timezone.utc) - AGENT_ONLINE_WINDOW
     has_agent = select(Agent.id).where(Agent.computer_id == Computer.id).exists()
     has_online_agent = select(Agent.id).where(

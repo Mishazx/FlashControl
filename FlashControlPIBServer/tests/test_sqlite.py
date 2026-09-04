@@ -486,6 +486,98 @@ class SqliteApiTests(unittest.TestCase):
             )
         self.assertEqual(remaining, 0)
 
+        computer_event_id = uuid.uuid4()
+        computer_response = self.client.post(
+            "/api/v1/observations",
+            json=observation_payload(
+                computer_event_id,
+                hostname="cleanup-computer-host",
+                hardware="j",
+                media="k",
+                state="l",
+            ),
+        )
+        self.assertEqual(computer_response.status_code, 200)
+        with SessionLocal() as session:
+            observation = session.scalar(
+                select(Observation).where(Observation.event_id == computer_event_id)
+            )
+            computer_id = observation.computer_id
+            device_id = observation.physical_device_id
+
+        deleted_computer = self.client.delete(
+            "/api/v1/computers/" + str(computer_id),
+            headers={"X-CSRF-Token": csrf},
+        )
+        self.assertEqual(deleted_computer.status_code, 200)
+        self.assertEqual(deleted_computer.json()["deleted_computers"], 1)
+        self.assertEqual(deleted_computer.json()["deleted_observations"], 1)
+        with SessionLocal() as session:
+            self.assertIsNone(session.get(Computer, computer_id))
+            self.assertIsNone(session.scalar(select(Observation).where(Observation.event_id == computer_event_id)))
+            self.assertIsNone(session.get(PhysicalDevice, device_id))
+
+    def test_only_admin_can_delete_devices_and_computers(self):
+        with SessionLocal() as session:
+            create_local_user(session, "test-security", "security password for tests", "security")
+
+        event_id = uuid.uuid4()
+        ingested = self.client.post(
+            "/api/v1/observations",
+            json=observation_payload(
+                event_id,
+                hostname="role-cleanup-host",
+                hardware="m",
+                media="n",
+                state="o",
+            ),
+        )
+        self.assertEqual(ingested.status_code, 200)
+        with SessionLocal() as session:
+            observation = session.scalar(
+                select(Observation).where(Observation.event_id == event_id)
+            )
+            computer_id = observation.computer_id
+            device_id = observation.physical_device_id
+
+        guest = TestClient(app)
+        login = guest.post(
+            "/api/v1/auth/login",
+            json={"username": "test-security", "password": "security password for tests"},
+        )
+        self.assertEqual(login.status_code, 200)
+        csrf = guest.cookies.get("flashcontrol_csrf")
+        self.assertEqual(
+            guest.delete("/api/v1/devices/" + str(device_id), headers={"X-CSRF-Token": csrf}).status_code,
+            403,
+        )
+        self.assertEqual(
+            guest.delete("/api/v1/computers/" + str(computer_id), headers={"X-CSRF-Token": csrf}).status_code,
+            403,
+        )
+        guest.close()
+
+        auditor = TestClient(app)
+        auditor_login = auditor.post(
+            "/api/v1/auth/login",
+            json={"username": "test-auditor", "password": "auditor password for tests"},
+        )
+        self.assertEqual(auditor_login.status_code, 200)
+        auditor_csrf = auditor.cookies.get("flashcontrol_csrf")
+        self.assertEqual(
+            auditor.delete("/api/v1/devices/" + str(device_id), headers={"X-CSRF-Token": auditor_csrf}).status_code,
+            403,
+        )
+        self.assertEqual(
+            auditor.delete("/api/v1/computers/" + str(computer_id), headers={"X-CSRF-Token": auditor_csrf}).status_code,
+            403,
+        )
+        auditor.close()
+
+        with SessionLocal() as session:
+            self.assertIsNotNone(session.get(Computer, computer_id))
+            self.assertIsNotNone(session.get(PhysicalDevice, device_id))
+
     def test_authentication_session_csrf_and_roles(self):
         guest = TestClient(app)
         self.assertEqual(

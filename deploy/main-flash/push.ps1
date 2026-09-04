@@ -1,6 +1,7 @@
 param(
     [string]$HostName = "main-flash",
-    [switch]$BootstrapPilot
+    [switch]$BootstrapPilot,
+    [switch]$ResetDatabase
 )
 
 $ErrorActionPreference = "Stop"
@@ -11,7 +12,6 @@ $remoteArchive = "/tmp/flashcontrol-$stamp.tar"
 $remoteRelease = "/opt/flashcontrol/releases/$stamp"
 $temporaryEnvironment = $null
 $machineToken = $null
-$adminPassword = $null
 
 function New-RandomUrlSafeSecret([int]$Bytes = 32) {
     $buffer = [byte[]]::new($Bytes)
@@ -36,14 +36,12 @@ try {
         }
         $dbPassword = New-RandomUrlSafeSecret
         $machineToken = New-RandomUrlSafeSecret 48
-        $adminPassword = New-RandomUrlSafeSecret 24
         $temporaryEnvironment = Join-Path ([System.IO.Path]::GetTempPath()) "flashcontrol-env-$stamp"
         @(
             "POSTGRES_DB=flashcontrol"
             "POSTGRES_USER=flashcontrol"
             "POSTGRES_PASSWORD=$dbPassword"
             "FLASHCONTROL_ENVIRONMENT=development"
-            "FLASHCONTROL_AUTH_PROVIDER=local"
             "FLASHCONTROL_MACHINE_AUTH_MODE=token"
             "FLASHCONTROL_DEV_MACHINE_TOKEN=$machineToken"
             "FLASHCONTROL_LOG_LEVEL=INFO"
@@ -64,16 +62,15 @@ try {
 
     Send-FileThroughSsh $archive $remoteArchive
 
-    ssh $HostName "sudo mkdir -p '$remoteRelease' /opt/flashcontrol/shared/backups && sudo tar -xf '$remoteArchive' -C '$remoteRelease' && sudo chown -R user:user /opt/flashcontrol && rm -f '$remoteArchive' && bash '$remoteRelease/deploy/main-flash/deploy.sh' '$remoteRelease' '$stamp'"
+    $deployCommand = "sudo mkdir -p '$remoteRelease' /opt/flashcontrol/shared/backups && sudo tar -xf '$remoteArchive' -C '$remoteRelease' && sudo chown -R user:user /opt/flashcontrol && rm -f '$remoteArchive' && bash '$remoteRelease/deploy/main-flash/deploy.sh' '$remoteRelease' '$stamp'"
+    if ($ResetDatabase) {
+        $deployCommand += " --reset-database"
+    }
+    ssh $HostName "$deployCommand"
     if ($LASTEXITCODE -ne 0) { throw "remote deployment failed" }
 
     if ($BootstrapPilot) {
-        "$adminPassword`n$adminPassword`n" | ssh $HostName "sudo docker exec -i flashcontrol-main python -m app.manage_user create --username admin --role admin"
-        if ($LASTEXITCODE -ne 0) { throw "admin account creation failed" }
         Write-Warning "Pilot uses local authentication and plain HTTP."
-        Write-Host "Admin username: admin"
-        Write-Host "Admin password: $adminPassword"
-        Write-Host "Machine token: $machineToken"
     }
 
     Write-Host "FlashControl $stamp deployed to $HostName"

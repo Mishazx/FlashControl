@@ -26,6 +26,7 @@ from heartbeat import (
     enroll_url,
     heartbeat_url,
     load_or_create_agent_id,
+    forget_secret,
     persist_secret,
 )
 from observation_payload import expand_observations, pack_observation_payload
@@ -302,6 +303,8 @@ def enroll_with_collector(url, payload, timeout_seconds, context):
 def drain_delivery_queue(queue, server_url, timeout_seconds, batch_size,
                          retry_interval_seconds, retry_max_seconds, logger,
                          agent_id, machine_token, context):
+    unauthorized = [False]
+
     def sender(payload_json):
         headers = machine_headers(agent_id, machine_token)
         status_code, _body = post_json(server_url, payload_json, timeout_seconds, headers, context)
@@ -309,6 +312,8 @@ def drain_delivery_queue(queue, server_url, timeout_seconds, batch_size,
             raise RuntimeError("server returned HTTP %s" % status_code)
 
     def log_failure(event_id, exc, delay):
+        if getattr(exc, "code", None) == 401:
+            unauthorized[0] = True
         logger.warning(
             "delivery failed for event_id=%s; retry in %ss: %s",
             event_id,
@@ -316,7 +321,7 @@ def drain_delivery_queue(queue, server_url, timeout_seconds, batch_size,
             exc,
         )
 
-    return deliver_due(
+    delivered = deliver_due(
         queue,
         sender,
         limit=batch_size,
@@ -324,6 +329,27 @@ def drain_delivery_queue(queue, server_url, timeout_seconds, batch_size,
         max_delay=retry_max_seconds,
         on_failure=log_failure,
     )
+    return delivered, unauthorized[0]
+
+
+def recover_stale_issued_token(config, token_path, recovery_attempted, logger):
+    """Forget one invalid per-agent token; explicit credentials stay untouched."""
+    if (
+        recovery_attempted
+        or (config.get("machine_token") or "").strip()
+        or (config.get("client_cert_file") or "").strip()
+    ):
+        return recovery_attempted
+    if forget_secret(token_path):
+        logger.warning(
+            "collector rejected the issued token (HTTP 401); cleared it and will enroll once more"
+        )
+    else:
+        logger.warning(
+            "collector returned HTTP 401, but no issued token file could be cleared; "
+            "automatic re-enrollment skipped"
+        )
+    return True
 
 
 class FlashControlAgentService(win32serviceutil.ServiceFramework):
@@ -438,6 +464,7 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
         device_scan_at = None
         device_notification_scan = False
         device_cache = {}
+        stale_token_recovery_attempted = False
         self.register_device_notifications()
         try:
             while True:
@@ -508,7 +535,7 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
                         self.logger.warning("enroll failed: %s", exc)
 
                 if server_url and credentials_ready:
-                    delivered = drain_delivery_queue(
+                    delivered, received_unauthorized = drain_delivery_queue(
                         queue, server_url, timeout_seconds, batch_size,
                         retry_interval_seconds, retry_max_seconds, self.logger,
                         agent_id, machine_token,
@@ -519,6 +546,13 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
                             "delivered %s observation(s); queue_size=%s",
                             delivered,
                             queue.count(),
+                        )
+                    # A database reset invalidates the agent-specific token but
+                    # leaves its local token file intact. Retry enrollment once
+                    # for that specific case; never loop on a bad server setup.
+                    if received_unauthorized:
+                        stale_token_recovery_attempted = recover_stale_issued_token(
+                            self.config, token_path, stale_token_recovery_attempted, self.logger
                         )
 
                 now = time.time()
@@ -543,6 +577,10 @@ class FlashControlAgentService(win32serviceutil.ServiceFramework):
                         self.logger.info("heartbeat accepted; queue_size=%s", queue.count())
                     except Exception as exc:
                         self.logger.warning("heartbeat failed: %s", exc)
+                        if getattr(exc, "code", None) == 401:
+                            stale_token_recovery_attempted = recover_stale_issued_token(
+                                self.config, token_path, stale_token_recovery_attempted, self.logger
+                            )
                     next_heartbeat_at = time.time() + heartbeat_interval
 
                 wait_seconds = min(

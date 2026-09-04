@@ -274,6 +274,20 @@ USB-накопитель в автоматическом test run.
 python -m unittest discover -s tests -v
 ```
 
+Для формирования машиночитаемого отчёта по всем пакетам проекта:
+
+```powershell
+python tools/test_report.py
+```
+
+Отчёт сохраняется в `reports/test-report.json` и содержит сводные счётчики,
+результат каждого теста, длительность, причины пропусков и traceback ошибок.
+Для запуска Windows integration-набора используйте:
+
+```powershell
+python tools/test_report.py --integration
+```
+
 После выполнения предоставить:
 
 - список созданных/изменённых файлов;

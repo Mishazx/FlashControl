@@ -11,13 +11,17 @@ def main() -> int:
     create = subparsers.add_parser("create", help="Create a local user")
     create.add_argument("--username", required=True)
     create.add_argument("--role", choices=ALLOWED_ROLES, default="admin")
+    create.add_argument("--password", help="Non-interactive password (minimum 12 characters)")
     args = parser.parse_args()
 
     initialize_database()
-    password = getpass.getpass("Password (minimum 12 characters): ")
-    confirmation = getpass.getpass("Repeat password: ")
-    if password != confirmation:
-        parser.error("passwords do not match")
+    if args.password:
+        password = args.password
+    else:
+        password = getpass.getpass("Password (minimum 12 characters): ")
+        confirmation = getpass.getpass("Repeat password: ")
+        if password != confirmation:
+            parser.error("passwords do not match")
     with SessionLocal() as db:
         user = create_local_user(db, args.username, password, args.role)
     print("Created local user %s with role %s" % (user.username, user.role))

@@ -97,7 +97,7 @@ html.light {
 
 *, *::before, *::after { box-sizing: border-box; }
 html, body { min-height: 100%; margin: 0; }
-body { color: var(--text); background: var(--bg); transition: background .2s, color .2s; }
+body { color: var(--text); background: var(--bg); }
 #root { min-height: 100vh; }
 button, input, select { font: inherit; }
 button { color: inherit; }

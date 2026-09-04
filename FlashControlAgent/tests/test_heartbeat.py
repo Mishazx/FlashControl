@@ -19,6 +19,7 @@ from heartbeat import (
     build_heartbeat,
     delivery_credentials_configured,
     enroll_url,
+    forget_secret,
     heartbeat_url,
     host_from_observation,
     load_or_create_agent_id,
@@ -56,6 +57,13 @@ class HeartbeatTests(unittest.TestCase):
         persist_secret(token_path, "issued-token")
         self.assertTrue(delivery_credentials_configured({"machine_token_file": token_path}))
 
+    def test_forget_secret_removes_only_the_issued_token_file(self):
+        token_path = os.path.join(self.folder, "agent.token")
+        persist_secret(token_path, "issued-token")
+        self.assertTrue(forget_secret(token_path))
+        self.assertFalse(os.path.exists(token_path))
+        self.assertFalse(forget_secret(token_path))
+
     def test_enroll_url_is_derived_from_known_ingest_path(self):
         self.assertEqual(
             enroll_url("https://main/api/v1/observations"),
@@ -86,6 +94,21 @@ class HeartbeatTests(unittest.TestCase):
         self.assertEqual(result["domain"], "CORP")
         self.assertEqual(result["current_ips"], ["10.0.0.1"])
         self.assertEqual(result["queue_size"], 7)
+
+    def test_workgroup_host_does_not_use_userdomain_as_ad_domain(self):
+        previous = os.environ.get("USERDOMAIN")
+        os.environ["USERDOMAIN"] = "WORKGROUP"
+        try:
+            result = build_heartbeat(
+                str(uuid.uuid4()), "0.4.0", 0,
+                {"hostname": "workstation", "ip_addresses": ["10.0.0.1"]},
+            )
+        finally:
+            if previous is None:
+                del os.environ["USERDOMAIN"]
+            else:
+                os.environ["USERDOMAIN"] = previous
+        self.assertIsNone(result["domain"])
 
     def test_host_is_read_from_shared_batch_envelope(self):
         payload = json.dumps({

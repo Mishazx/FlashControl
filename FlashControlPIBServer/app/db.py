@@ -1,4 +1,6 @@
-from sqlalchemy import create_engine, inspect, text
+from pathlib import Path
+
+from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from .config import DATABASE_URL
@@ -11,6 +13,25 @@ engine = create_engine(
     connect_args={"check_same_thread": False} if IS_SQLITE else {},
 )
 SessionLocal = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
+
+ALEMBIC_DIR = Path(__file__).resolve().parents[1] / "alembic"
+
+
+def run_migrations() -> None:
+    """Apply pending schema migrations with Alembic."""
+    from alembic import command
+    from alembic.config import Config
+
+    alembic_cfg = Config(str(ALEMBIC_DIR.parent / "alembic.ini"))
+    alembic_cfg.set_main_option("script_location", str(ALEMBIC_DIR))
+    if DATABASE_URL:
+        alembic_cfg.set_main_option("sqlalchemy.url", DATABASE_URL)
+    command.upgrade(alembic_cfg, "head")
+
+
+def initialize_database():
+    run_migrations()
+
 
 
 def initialize_sqlite_database(target_engine):

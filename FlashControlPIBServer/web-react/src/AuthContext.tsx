@@ -15,9 +15,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     api<User>('/auth/me')
       .then((user) => setState({ user, loading: false }))
-      .catch(() => {
-        window.location.assign('/login');
-      });
+      .catch(() => setState({ user: null, loading: false }));
   }, []);
 
   return <AuthContext.Provider value={state}>{children}</AuthContext.Provider>;

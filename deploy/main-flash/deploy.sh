@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-release_dir=${1:?usage: deploy.sh RELEASE_DIRECTORY [IMAGE_TAG]}
-image_tag=${2:-$(date -u +%Y%m%d%H%M%S)}
+release_dir=${1:?usage: deploy.sh RELEASE_DIRECTORY [IMAGE_TAG] [--reset-database]}
+shift
+image_tag=$(date -u +%Y%m%d%H%M%S)
+reset_database=false
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --reset-database) reset_database=true ;;
+    *) image_tag=$1 ;;
+  esac
+  shift
+done
 install_dir=/opt/flashcontrol
 shared_dir=$install_dir/shared
 env_file=$shared_dir/flashcontrol.env
@@ -12,6 +21,7 @@ db_container=flashcontrol-postgres
 app_container=flashcontrol-main
 web_container=flashcontrol-web
 image=flashcontrol-main:$image_tag
+frontend_image=flashcontrol-web:$image_tag
 previous_container=flashcontrol-main-previous
 
 docker_cmd=(sudo docker)
@@ -33,6 +43,7 @@ postgres_db=$(env_value POSTGRES_DB)
 postgres_user=$(env_value POSTGRES_USER)
 postgres_password=$(env_value POSTGRES_PASSWORD)
 [[ -n "$postgres_db" && -n "$postgres_user" && -n "$postgres_password" ]] || fail "PostgreSQL settings are incomplete"
+[[ "$postgres_db" != postgres ]] || fail "POSTGRES_DB cannot be postgres"
 [[ "$postgres_db" =~ ^[A-Za-z0-9_-]+$ ]] || fail "POSTGRES_DB contains unsupported characters"
 [[ "$postgres_user" =~ ^[A-Za-z0-9_-]+$ ]] || fail "POSTGRES_USER contains unsupported characters"
 [[ "$postgres_password" =~ ^[A-Za-z0-9._~-]+$ ]] || fail "POSTGRES_PASSWORD must be URL-safe (letters, digits, . _ ~ -)"
@@ -65,12 +76,21 @@ backup_file=$backup_dir/flashcontrol-$(date -u +%Y%m%dT%H%M%SZ).sql.gz
 find "$backup_dir" -maxdepth 1 -type f -name 'flashcontrol-*.sql.gz' -printf '%T@ %p\n' \
   | sort -nr | tail -n +4 | cut -d' ' -f2- | xargs -r rm -f
 
+if [[ "$reset_database" == true ]]; then
+  "${docker_cmd[@]}" exec -e PGPASSWORD="$postgres_password" "$db_container" \
+    psql -v ON_ERROR_STOP=1 -U "$postgres_user" -d postgres \
+    -c "DROP DATABASE IF EXISTS \"${postgres_db}\" WITH (FORCE);" \
+    -c "CREATE DATABASE \"${postgres_db}\" OWNER \"${postgres_user}\";"
+fi
+
 for migration in "$release_dir"/FlashControlPIBServer/migrations/*.sql; do
   "${docker_cmd[@]}" exec -i -e PGPASSWORD="$postgres_password" "$db_container" \
     psql -v ON_ERROR_STOP=1 -U "$postgres_user" -d "$postgres_db" <"$migration"
 done
 
 "${docker_cmd[@]}" build --pull --label com.flashcontrol.component=main -t "$image" "$release_dir/FlashControlPIBServer"
+"${docker_cmd[@]}" build --pull --label com.flashcontrol.component=web -t "$frontend_image" \
+  -f "$release_dir/FlashControlPIBServer/Dockerfile.frontend" "$release_dir/FlashControlPIBServer"
 
 "${docker_cmd[@]}" rm -f "$previous_container" >/dev/null 2>&1 || true
 if "${docker_cmd[@]}" container inspect "$app_container" >/dev/null 2>&1; then
@@ -85,6 +105,7 @@ if ! "${docker_cmd[@]}" run -d \
   --name "$app_container" \
   --restart unless-stopped \
   --network "$network" \
+  --network-alias api \
   --env-file "$env_file" \
   -e FLASHCONTROL_DATABASE_URL="$database_url" \
   -e FLASHCONTROL_TRUSTED_PROXIES="$trusted_proxies" \
@@ -120,10 +141,9 @@ fi
   --restart unless-stopped \
   --network "$network" \
   -p 80:80 \
-  --mount type=bind,source="$release_dir/deploy/main-flash/nginx.conf",target=/etc/nginx/conf.d/default.conf,readonly \
   --health-cmd='wget -q -O /dev/null http://127.0.0.1/health/ready || exit 1' \
   --health-interval=15s --health-timeout=3s --health-retries=4 \
-  nginx:1.28-alpine >/dev/null
+  "$frontend_image" >/dev/null
 
 web_healthy=false
 for _ in $(seq 1 20); do
@@ -142,8 +162,7 @@ if [[ "$web_healthy" != true ]]; then
     "${docker_cmd[@]}" start "$app_container" >/dev/null
     "${docker_cmd[@]}" run -d \
       --name "$web_container" --restart unless-stopped --network "$network" -p 80:80 \
-      --mount type=bind,source="$release_dir/deploy/main-flash/nginx.conf",target=/etc/nginx/conf.d/default.conf,readonly \
-      nginx:1.28-alpine >/dev/null
+      "$frontend_image" >/dev/null
   fi
   fail "Nginx health check failed; previous application container restored"
 fi
@@ -152,4 +171,25 @@ fi
 "${docker_cmd[@]}" image prune -af \
   --filter 'label=com.flashcontrol.component=main' \
   --filter 'until=168h' >/dev/null
+"${docker_cmd[@]}" image prune -af \
+  --filter 'label=com.flashcontrol.component=web' \
+  --filter 'until=168h' >/dev/null
+
+if [[ -z "$(env_value FLASHCONTROL_LDAP_SERVER_URI)" ]]; then
+  user_count=$("${docker_cmd[@]}" exec -e PGPASSWORD="$postgres_password" "$db_container" \
+    psql -At -U "$postgres_user" -d "$postgres_db" -c "SELECT count(*) FROM auth_users" | tr -d '\r\n ')
+  if [[ "${user_count:-0}" -eq 0 ]]; then
+    admin_password=$("${docker_cmd[@]}" exec "$app_container" python -c "import secrets; print(secrets.token_urlsafe(18))")
+    [[ -n "$admin_password" ]] || fail "could not generate admin password"
+    "${docker_cmd[@]}" exec "$app_container" \
+      python -m app.manage_user create --username admin --role admin --password "$admin_password" \
+      >/dev/null
+    echo "Admin username: admin"
+    echo "Admin password: $admin_password"
+    machine_token=$(env_value FLASHCONTROL_DEV_MACHINE_TOKEN)
+    if [[ -n "$machine_token" ]]; then
+      echo "Machine token: $machine_token"
+    fi
+  fi
+fi
 echo "Deployed $image at http://$(hostname -I | awk '{print $1}')/; backup: $backup_file"

@@ -22,6 +22,7 @@
         <a href="#events" data-page="events"><span>≋</span>События</a>
         <a href="#alerts" data-page="alerts"><span>△</span>Предупреждения</a>
         <a href="#audit" data-page="audit" data-roles="admin,security" hidden><span>◎</span>Журнал действий</a>
+        <a href="#users" data-page="users" data-roles="admin" hidden><span>♙</span>Пользователи</a>
       </nav>
       <div class="sidebar-foot">
         <span class="status-dot" id="server-dot"></span>
@@ -50,8 +51,14 @@
   <div class="drawer-backdrop" id="drawer-backdrop" hidden></div>
   <aside class="drawer" id="drawer" aria-label="Детальная информация" aria-hidden="true">
     <div class="drawer-head">
-      <div><p class="eyebrow" id="drawer-eyebrow">ДЕТАЛИ</p><h2 id="drawer-title">Карточка</h2></div>
-      <button class="icon-button" id="drawer-close" aria-label="Закрыть">×</button>
+      <div class="drawer-heading">
+        <p class="eyebrow" id="drawer-eyebrow">ДЕТАЛИ</p>
+        <h2 id="drawer-title">Карточка</h2>
+      </div>
+      <div class="drawer-head-actions">
+        <button class="button danger ghost" id="drawer-delete" type="button" hidden>Удалить</button>
+        <button class="icon-button" id="drawer-close" aria-label="Закрыть">×</button>
+      </div>
     </div>
     <div class="drawer-body" id="drawer-body"></div>
   </aside>
